@@ -1,0 +1,33 @@
+# ==========================================
+# Standard Unity .gitignore
+# ==========================================
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+/[Aa]ssets/AssetStoreTools*
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.sln
+*.suo
+*.user
+*.userprefs
+*.pidb
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+sysinfo.txt
+.DS_Store
+Thumbs.db
+*.apk
+*.aab
+*.unitypackage
+*.app
