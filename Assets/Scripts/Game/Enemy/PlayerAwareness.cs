@@ -13,7 +13,7 @@ public class PlayerAwareness : MonoBehaviour
 
     private void Awake() // on load 
     {
-        _player = FindObjectOfType<PlayerScript>().transform;
+        _player = FindFirstObjectByType<PlayerScript>().transform;
     }
 
     void Update()

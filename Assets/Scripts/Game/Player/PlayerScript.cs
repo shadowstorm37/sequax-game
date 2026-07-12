@@ -1,54 +1,169 @@
 using UnityEngine;
-using System.Collections.Generic;
-using System.Collections;
-using UnityEngine.InputSystem;
 
+public enum MovementState { Idle, Crouch, Walk, Sprint }
+
+[RequireComponent(typeof(Rigidbody2D))]
 public class PlayerScript : MonoBehaviour
 {
-    [SerializeField] private float _speed; // allows variable to be set within unity itself 
-    [SerializeField] private float _rotationSpeed; // how fast the character rotates (ccould vary by movement type , maybej)
-    private Rigidbody2D _rigidbody; // variables
-    private Vector2 _movementInput; // the movement input
-    private Vector2 _smoothedMovementInput;
-    private Vector2 _movementInputSmoothVelocity; 
+    [Header("Movement Speeds")]
+    [SerializeField] private float crouchSpeed = 1.5f;
+    [SerializeField] private float walkSpeed = 3.5f;
+    [SerializeField] private float sprintSpeed = 6f;
 
-    private void Awake(){ // entry point , called on object instantiating (when gameplay begins)
-        _rigidbody = GetComponent<Rigidbody2D>();
+    [Header("Rotation")]
+    [Tooltip("Degrees per second the player turns to face FacingDirection.")]
+    [SerializeField] private float rotationSpeed = 720f;
+
+    [Header("Stamina")]
+    [SerializeField] private float maxStamina = 100f;
+    [SerializeField] private float staminaDrainPerSecond = 25f;
+    [SerializeField] private float staminaRegenPerSecond = 15f;
+    [Tooltip("Can't START sprinting below this, so you can't tap-sprint with near-zero stamina. Depleting to 0 WHILE sprinting still cuts you off immediately.")]
+    [SerializeField] private float minStaminaToStartSprint = 10f;
+
+    [Header("Footstep Sound - Distance Between Steps")]
+    [SerializeField] private float crouchStepDistance = 1.2f;
+    [SerializeField] private float walkStepDistance = 1.5f;
+    [SerializeField] private float sprintStepDistance = 1.8f;
+
+    [Header("Footstep Sound - Hearing Radius")]
+    [SerializeField] private float crouchLoudness = 1.5f;
+    [SerializeField] private float walkLoudness = 5f;
+    [SerializeField] private float sprintLoudness = 10f;
+
+    public MovementState CurrentState { get; private set; } = MovementState.Idle;
+    public float Stamina { get; private set; }
+    public float StaminaNormalized => Stamina / maxStamina;
+    public Vector2 FacingDirection { get; private set; } = Vector2.up;
+
+    private Rigidbody2D rb;
+    private Vector2 moveInput;
+    private float distanceSinceLastStep;
+    private bool wantsToSprint;
+    private bool wantsToCrouch;
+
+    private void Awake()
+    {
+        rb = GetComponent<Rigidbody2D>();
+        rb.gravityScale = 0f; // top-down game, no gravity
+        Stamina = maxStamina;
     }
 
-    private void FixedUpdate() // runs every 0.02 seconds , loop 
-    // Update method triggers every rendered frame, this ones more stable (so i heard)
+    private void Update()
     {
-        SetPlayerVelocity();
-        RotateInDirectionOfInput();
-    }
-
-    private void SetPlayerVelocity() // sets dynamic movement
-    {
-        _smoothedMovementInput = Vector2.SmoothDamp( // adds smoother movement 
-            _smoothedMovementInput,
-            _movementInput,
-            ref _movementInputSmoothVelocity,
-            0.1f // changes every 0.1 seconds
-        );
-        _rigidbody.linearVelocity = _smoothedMovementInput * _speed; // speed scales the vector 
-    }
-
-    private void RotateInDirectionOfInput() // rotates direction to input
-    {
-        if(_movementInput != Vector2.zero) // if char moves 
+        // Read input every frame for responsiveness; movement itself is applied in FixedUpdate.
+        moveInput.x = Input.GetAxisRaw("Horizontal");
+        moveInput.y = Input.GetAxisRaw("Vertical");
+        moveInput = moveInput.normalized;
+        if (moveInput.sqrMagnitude > 0.01f)
         {
-            // odd stuff
-            Quaternion targetRotation = Quaternion.LookRotation(transform.forward,_smoothedMovementInput);
-            Quaternion rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, _rotationSpeed * Time.deltaTime);  
+            FacingDirection = moveInput;
+        }
+        
+        wantsToSprint = Input.GetKey(KeyCode.LeftShift);
+        wantsToCrouch = Input.GetKey(KeyCode.LeftControl);
+    }
 
-            _rigidbody.MoveRotation(rotation);
+    private void FixedUpdate()
+    {
+        UpdateMovementState();
+        ApplyMovement();
+        RotateTowardsFacing();
+        UpdateStamina();
+        HandleFootsteps();
+    }
+
+    private void UpdateMovementState()
+    {
+        bool isMoving = moveInput.sqrMagnitude > 0.01f;
+
+        if (!isMoving)
+        {
+            CurrentState = MovementState.Idle;
+            return;
+        }
+
+        // Sprint takes priority over crouch if both are held, but only while stamina allows it.
+        // NOTE: crouch-sprinting isn't a thing here - decide if that's intentional for your design.
+        if (wantsToSprint && Stamina > 0f && (CurrentState == MovementState.Sprint || Stamina > minStaminaToStartSprint))
+        {
+            CurrentState = MovementState.Sprint;
+        }
+        else if (wantsToCrouch)
+        {
+            CurrentState = MovementState.Crouch;
+        }
+        else
+        {
+            CurrentState = MovementState.Walk;
         }
     }
 
-    private void OnMove(InputValue inputValue)
+    private void ApplyMovement()
     {
-        _movementInput =  inputValue.Get<Vector2>(); // gets the vector of the input (x y pair) 
+        float speed = CurrentState switch
+        {
+            MovementState.Crouch => crouchSpeed,
+            MovementState.Sprint => sprintSpeed,
+            MovementState.Walk => walkSpeed,
+            _ => 0f
+        };
 
+        rb.linearVelocity = moveInput * speed;
+    }
+
+    private void RotateTowardsFacing()
+    {
+        Quaternion targetRotation = Quaternion.LookRotation(transform.forward, FacingDirection);
+        Quaternion rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, rotationSpeed * Time.fixedDeltaTime);
+        rb.MoveRotation(rotation);
+    }
+
+    private void UpdateStamina()
+    {
+        if (CurrentState == MovementState.Sprint)
+        {
+            Stamina = Mathf.Max(0f, Stamina - staminaDrainPerSecond * Time.fixedDeltaTime);
+        }
+        else
+        {
+            Stamina = Mathf.Min(maxStamina, Stamina + staminaRegenPerSecond * Time.fixedDeltaTime);
+        }
+    }
+
+    private void HandleFootsteps()
+    {
+        if (CurrentState == MovementState.Idle) return;
+
+        distanceSinceLastStep += rb.linearVelocity.magnitude * Time.fixedDeltaTime;
+
+        float stepDistance = CurrentState switch
+        {
+            MovementState.Crouch => crouchStepDistance,
+            MovementState.Sprint => sprintStepDistance,
+            _ => walkStepDistance
+        };
+
+        if (distanceSinceLastStep >= stepDistance)
+        {
+            distanceSinceLastStep = 0f;
+            EmitFootstepSound();
+        }
+    }
+
+    private void EmitFootstepSound()
+    {
+        if (SoundManager.Instance == null) return;
+
+        float loudness = CurrentState switch
+        {
+            MovementState.Crouch => crouchLoudness,
+            MovementState.Sprint => sprintLoudness,
+            _ => walkLoudness
+        };
+
+        SoundType type = CurrentState == MovementState.Sprint ? SoundType.Sprint : SoundType.Footstep;
+
+        SoundManager.Instance.EmitSound(rb.position, loudness, type, gameObject);
     }
 }
