@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.UI;
 
 public enum MovementState { Idle, Crouch, Walk, Sprint }
 
@@ -32,6 +33,7 @@ public class PlayerScript : MonoBehaviour
     [SerializeField] private float sprintLoudness = 10f;
 
     public MovementState CurrentState { get; private set; } = MovementState.Idle;
+    public Image staminaBar;
     public float Stamina { get; private set; }
     public float StaminaNormalized => Stamina / maxStamina;
     public Vector2 FacingDirection { get; private set; } = Vector2.up;
@@ -129,6 +131,7 @@ public class PlayerScript : MonoBehaviour
         {
             Stamina = Mathf.Min(maxStamina, Stamina + staminaRegenPerSecond * Time.fixedDeltaTime);
         }
+        staminaBar.fillAmount = Stamina / maxStamina;
     }
 
     private void HandleFootsteps()
