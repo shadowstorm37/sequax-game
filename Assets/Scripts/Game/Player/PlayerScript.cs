@@ -154,6 +154,14 @@ public class PlayerScript : MonoBehaviour
         }
     }
 
+    private void OnCollisionEnter2D(Collision2D collision)
+    {
+        if (collision.gameObject.CompareTag("Monster"))
+        {
+            Debug.Log("Monster gotchu ! TODO: add game over sequence here");
+        }
+    }
+
     private void EmitFootstepSound()
     {
         if (SoundManager.Instance == null) return;
