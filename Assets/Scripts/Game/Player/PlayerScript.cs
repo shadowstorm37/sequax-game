@@ -39,6 +39,7 @@ public class PlayerScript : MonoBehaviour
     public Vector2 FacingDirection { get; private set; } = Vector2.up;
 
     private Rigidbody2D rb;
+    private Camera mainCamera;
     private Vector2 moveInput;
     private float distanceSinceLastStep;
     private bool wantsToSprint;
@@ -48,6 +49,7 @@ public class PlayerScript : MonoBehaviour
     {
         rb = GetComponent<Rigidbody2D>();
         rb.gravityScale = 0f; // top-down game, no gravity
+        mainCamera = Camera.main;
         Stamina = maxStamina;
     }
 
@@ -57,13 +59,26 @@ public class PlayerScript : MonoBehaviour
         moveInput.x = Input.GetAxisRaw("Horizontal");
         moveInput.y = Input.GetAxisRaw("Vertical");
         moveInput = moveInput.normalized;
-        if (moveInput.sqrMagnitude > 0.01f)
-        {
-            FacingDirection = moveInput;
-        }
-        
+
+        UpdateFacingFromMouse();
+
         wantsToSprint = Input.GetKey(KeyCode.LeftShift);
         wantsToCrouch = Input.GetKey(KeyCode.LeftControl);
+    }
+
+    private void UpdateFacingFromMouse()
+    {
+        if (mainCamera == null) return;
+
+        Vector3 mouseScreenPos = Input.mousePosition;
+        mouseScreenPos.z = Mathf.Abs(mainCamera.transform.position.z - transform.position.z);
+        Vector3 mouseWorldPos = mainCamera.ScreenToWorldPoint(mouseScreenPos);
+
+        Vector2 toMouse = (Vector2)mouseWorldPos - (Vector2)transform.position;
+        if (toMouse.sqrMagnitude > 0.0001f)
+        {
+            FacingDirection = toMouse.normalized;
+        }
     }
 
     private void FixedUpdate()

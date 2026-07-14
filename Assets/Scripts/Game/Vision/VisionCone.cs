@@ -1,18 +1,25 @@
 using UnityEngine;
 
 /// <summary>
-/// Generates a Sprite (circle + forward-facing cone) at runtime and feeds it
-/// into a SpriteMask. The shape is baked once as a texture; at runtime we
-/// just rotate this GameObject's transform to point the cone toward the
-/// player's facing direction, which is cheap compared to regenerating the
-/// texture every frame.
+/// Computes the player's line of sight (circle + forward-facing cone, clipped by
+/// obstacles) and bakes it into a world-aligned alpha texture: 1 = fully visible,
+/// 0 = fully dark, with soft gradients in between. That texture is published as a
+/// global shader texture, along with the world-space params needed to sample it,
+/// for the VisionDesaturate full-screen shader (see Assets/Shaders/VisionDesaturate.shader)
+/// to read back and desaturate whatever's on screen outside the player's sight.
+///
+/// This does NOT render anything itself - it's a data source for the Full Screen
+/// Pass Renderer Feature. See VisionDesaturate.shader for the Editor-side setup.
 ///
 /// SETUP:
 /// 1. Create an empty child GameObject under Player, name it "VisionMask".
 /// 2. Reset its local position to (0,0,0) - it must sit exactly on the player.
-/// 3. Add this script to it (it auto-adds a SpriteMask component).
+/// 3. Add this script to it.
+/// 4. Put trees/rocks/walls that should block vision on a dedicated layer and
+///    assign that layer to obstacleLayerMask below. They need a Collider2D.
+/// 5. Set up the Full Screen Pass Renderer Feature per VisionDesaturate.shader's
+///    header comment.
 /// </summary>
-[RequireComponent(typeof(SpriteMask))]
 public class VisionConeMask : MonoBehaviour
 {
     [Header("Shape")]
@@ -23,19 +30,47 @@ public class VisionConeMask : MonoBehaviour
     [Tooltip("Radius of the small always-visible circle around the player, in world units.")]
     [SerializeField] private float circleRadius = 1.5f;
 
-    [Header("Texture Quality")]
-    [Tooltip("Resolution of the generated mask texture. Higher = smoother edges, more expensive to generate (only happens once).")]
-    [SerializeField] private int textureResolution = 256;
-    [Tooltip("Soft edge width in pixels, to avoid a hard jagged cutoff. 0 = fully hard edge.")]
-    [SerializeField] private float featherPixels = 2f;
+    [Header("Occlusion")]
+    [Tooltip("Layers that block vision (trees, rocks, walls). These need a Collider2D.")]
+    [SerializeField] private LayerMask obstacleLayerMask;
+    [Tooltip("Number of rays cast around the player to find occluders. Higher = more precise obstacle edges, more expensive.")]
+    [SerializeField] private int occlusionRayCount = 180;
 
-    private SpriteMask spriteMask;
+    [Header("Edge Shading")]
+    [Tooltip("How far (world units) before the edge of the cone/circle/obstacle the darkness starts creeping in.")]
+    [SerializeField] private float fadeWidth = 1.5f;
+    [Tooltip("Angular softening (degrees) applied to the cone's side edges.")]
+    [SerializeField] private float fadeAngleDegrees = 6f;
+
+    [Header("Texture Quality")]
+    [Tooltip("Resolution of the generated vision texture. Higher = smoother edges, more expensive to regenerate.")]
+    [SerializeField] private int textureResolution = 256;
+
+    [Header("Performance")]
+    [Tooltip("Seconds between vision texture regenerations. Lower = more responsive to moving obstacles/facing, more expensive.")]
+    [SerializeField] private float updateInterval = 0.1f;
+
+    private static readonly int VisionTexId = Shader.PropertyToID("_VisionTex");
+    private static readonly int VisionOriginId = Shader.PropertyToID("_VisionOrigin");
+    private static readonly int VisionWorldDiameterId = Shader.PropertyToID("_VisionWorldDiameter");
+    private static readonly int VisionCamWorldPosId = Shader.PropertyToID("_VisionCamWorldPos");
+    private static readonly int VisionOrthoSizeId = Shader.PropertyToID("_VisionOrthoSize");
+
     private PlayerScript player;
+    private Camera mainCamera;
+
+    private Texture2D visionTexture;
+    private Color32[] visionPixels;
+    private float[] visibleDistances;
+
+    private float pixelsPerUnit;
+    private float worldDiameter;
+    private float updateTimer;
 
     private void Awake()
     {
-        spriteMask = GetComponent<SpriteMask>();
         player = GetComponentInParent<PlayerScript>();
+        mainCamera = Camera.main;
 
         if (player == null)
         {
@@ -43,67 +78,217 @@ public class VisionConeMask : MonoBehaviour
                               "This should be a child of the Player GameObject.");
         }
 
-        GenerateMaskSprite();
+        occlusionRayCount = Mathf.Max(occlusionRayCount, 8);
+        visibleDistances = new float[occlusionRayCount];
+
+        InitializeTexture();
+        RegenerateVisionTexture();
     }
 
     private void LateUpdate()
     {
+        PublishCameraGlobals();
+
         if (player == null) return;
 
-        Vector2 facing = player.FacingDirection;
-        float angle = Mathf.Atan2(facing.y, facing.x) * Mathf.Rad2Deg - 90f; // -90 because texture's cone points "up" by default
-        transform.rotation = Quaternion.Euler(0f, 0f, angle);
+        updateTimer += Time.deltaTime;
+        if (updateTimer < updateInterval) return;
+        updateTimer = 0f;
+
+        RegenerateVisionTexture();
     }
 
-    private void GenerateMaskSprite()
+    /// <summary>
+    /// True if worldPoint is within the always-visible circle or the facing cone, with a
+    /// clear line of sight (no obstacle between the player and it). Intended for enemies,
+    /// items, etc. that should be fully hidden until actually spotted.
+    /// </summary>
+    public bool IsPointVisible(Vector2 worldPoint)
     {
-        // World size the texture needs to cover: the larger of the two radii, plus a small margin.
+        if (player == null) return false;
+
+        Vector2 origin = transform.position;
+        Vector2 toPoint = worldPoint - origin;
+        float distWorld = toPoint.magnitude;
+
+        float maxRadius = Mathf.Max(coneRadius, circleRadius);
+        if (distWorld > maxRadius) return false;
+
+        if (distWorld > 0.0001f)
+        {
+            RaycastHit2D hit = Physics2D.Raycast(origin, toPoint.normalized, distWorld, obstacleLayerMask);
+            if (hit.collider != null) return false;
+        }
+
+        if (distWorld <= circleRadius) return true;
+        if (distWorld > coneRadius) return false;
+
+        Vector2 facing = player.FacingDirection;
+        float facingAngleDeg = Mathf.Atan2(facing.y, facing.x) * Mathf.Rad2Deg;
+        float pointAngleDeg = Mathf.Atan2(toPoint.y, toPoint.x) * Mathf.Rad2Deg;
+        float angleDiff = Mathf.Abs(Mathf.DeltaAngle(pointAngleDeg, facingAngleDeg));
+        return angleDiff <= coneAngleDegrees * 0.5f;
+    }
+
+    private void InitializeTexture()
+    {
+        UpdateWorldSizing();
+
+        visionPixels = new Color32[textureResolution * textureResolution];
+        visionTexture = new Texture2D(textureResolution, textureResolution, TextureFormat.Alpha8, false)
+        {
+            wrapMode = TextureWrapMode.Clamp
+        };
+    }
+
+    // Recomputed every regeneration (not just once in Awake) so that tweaking Cone Radius /
+    // Circle Radius in the Inspector - including during Play Mode - doesn't leave the texture's
+    // world-space sampling bounds stale. A stale (too-small) worldDiameter hard-clips the vision
+    // to a square well inside the actual cone radius, since the shader treats "outside the
+    // texture bounds" as fully hidden.
+    private void UpdateWorldSizing()
+    {
         float worldRadius = Mathf.Max(coneRadius, circleRadius) + 0.25f;
-        float worldDiameter = worldRadius * 2f;
-        float pixelsPerUnit = textureResolution / worldDiameter;
+        worldDiameter = worldRadius * 2f;
+        pixelsPerUnit = textureResolution / worldDiameter;
+    }
 
-        var texture = new Texture2D(textureResolution, textureResolution, TextureFormat.Alpha8, false);
-        texture.wrapMode = TextureWrapMode.Clamp;
+    private void PublishCameraGlobals()
+    {
+        if (mainCamera == null)
+        {
+            mainCamera = Camera.main;
+            if (mainCamera == null) return;
+        }
 
-        Vector2 center = new Vector2(textureResolution / 2f, textureResolution / 2f);
-        float circleRadiusPixels = circleRadius * pixelsPerUnit;
-        float coneRadiusPixels = coneRadius * pixelsPerUnit;
+        Shader.SetGlobalVector(VisionCamWorldPosId, mainCamera.transform.position);
+        Shader.SetGlobalFloat(VisionOrthoSizeId, mainCamera.orthographicSize);
+    }
+
+    private void RegenerateVisionTexture()
+    {
+        UpdateWorldSizing();
+
+        Vector2 origin = transform.position;
+        Vector2 facing = player != null ? player.FacingDirection : Vector2.up;
+        float facingAngleDeg = Mathf.Atan2(facing.y, facing.x) * Mathf.Rad2Deg;
+
+        float maxCastRadius = Mathf.Max(coneRadius, circleRadius);
+        float rayStepDeg = 360f / occlusionRayCount;
+
+        for (int i = 0; i < occlusionRayCount; i++)
+        {
+            float angleDeg = i * rayStepDeg;
+            Vector2 dir = new Vector2(Mathf.Cos(angleDeg * Mathf.Deg2Rad), Mathf.Sin(angleDeg * Mathf.Deg2Rad));
+            RaycastHit2D hit = Physics2D.Raycast(origin, dir, maxCastRadius, obstacleLayerMask);
+
+            if (hit.collider == null)
+            {
+                visibleDistances[i] = maxCastRadius;
+                continue;
+            }
+
+            // Reveal all the way through the obstacle itself (so it's actually visible,
+            // not just its near face) and only go dark once the ray has exited its bounds.
+            float exitDistance = RayBoundsExitDistance(origin, dir, hit.collider.bounds, hit.distance);
+            visibleDistances[i] = Mathf.Min(exitDistance, maxCastRadius);
+        }
+
         float halfConeAngleDeg = coneAngleDegrees * 0.5f;
-        const float angleFeatherDeg = 3f; // small fixed angular softening, independent of pixel feather
-        float safeFeather = Mathf.Max(featherPixels, 0.001f);
+        float centerPixel = textureResolution / 2f;
 
         for (int y = 0; y < textureResolution; y++)
         {
             for (int x = 0; x < textureResolution; x++)
             {
-                Vector2 pixelOffset = new Vector2(x, y) - center;
+                Vector2 pixelOffset = new Vector2(x - centerPixel, y - centerPixel);
                 Vector2 worldOffset = pixelOffset / pixelsPerUnit;
-                float distPixels = pixelOffset.magnitude;
+                float distWorld = worldOffset.magnitude;
 
-                // Circle coverage: 1 inside, fades to 0 over `featherPixels` at the boundary.
-                float circleAlpha = 1f - Mathf.Clamp01((distPixels - (circleRadiusPixels - safeFeather)) / safeFeather);
+                float pixelAngleDeg = Mathf.Atan2(worldOffset.y, worldOffset.x) * Mathf.Rad2Deg;
+                if (pixelAngleDeg < 0f) pixelAngleDeg += 360f;
 
-                // Cone coverage: combines a radius fade and an angle fade, multiplied together
-                // so a pixel only counts as "in the cone" if it's within both bounds.
-                float angleFromForwardDeg = Vector2.Angle(Vector2.up, worldOffset);
-                float coneRadiusAlpha = 1f - Mathf.Clamp01((distPixels - (coneRadiusPixels - safeFeather)) / safeFeather);
-                float coneAngleAlpha = 1f - Mathf.Clamp01((angleFromForwardDeg - (halfConeAngleDeg - angleFeatherDeg)) / angleFeatherDeg);
-                float coneAlpha = coneRadiusAlpha * coneAngleAlpha;
+                float obstacleDist = SampleObstacleDistance(pixelAngleDeg, rayStepDeg);
+                float circleEffectiveRadius = Mathf.Min(circleRadius, obstacleDist);
+                float coneEffectiveRadius = Mathf.Min(coneRadius, obstacleDist);
+                float angleFromForwardDeg = Mathf.Abs(Mathf.DeltaAngle(pixelAngleDeg, facingAngleDeg));
 
-                float alpha = Mathf.Clamp01(Mathf.Max(circleAlpha, coneAlpha));
-                texture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+                float visibility = ComputeVisibility(
+                    distWorld, angleFromForwardDeg, circleEffectiveRadius, coneEffectiveRadius,
+                    halfConeAngleDeg, fadeWidth, fadeAngleDegrees);
+
+                int idx = y * textureResolution + x;
+                visionPixels[idx] = new Color32(255, 255, 255, (byte)(visibility * 255f));
             }
         }
 
-        texture.Apply();
+        visionTexture.SetPixels32(visionPixels);
+        visionTexture.Apply(false);
 
-        var sprite = Sprite.Create(
-            texture,
-            new Rect(0, 0, textureResolution, textureResolution),
-            new Vector2(0.5f, 0.5f),
-            pixelsPerUnit
-        );
+        Shader.SetGlobalTexture(VisionTexId, visionTexture);
+        Shader.SetGlobalVector(VisionOriginId, origin);
+        Shader.SetGlobalFloat(VisionWorldDiameterId, worldDiameter);
+    }
 
-        spriteMask.sprite = sprite;
+    // Standard ray/AABB slab test, used to find where a ray exits an obstacle's bounds
+    // rather than just where it first touches them.
+    private static float RayBoundsExitDistance(Vector2 origin, Vector2 dir, Bounds bounds, float enterDistance)
+    {
+        float txMin, txMax;
+        if (Mathf.Abs(dir.x) > 1e-6f)
+        {
+            txMin = (bounds.min.x - origin.x) / dir.x;
+            txMax = (bounds.max.x - origin.x) / dir.x;
+            if (txMin > txMax) (txMin, txMax) = (txMax, txMin);
+        }
+        else
+        {
+            txMin = float.NegativeInfinity;
+            txMax = float.PositiveInfinity;
+        }
+
+        float tyMin, tyMax;
+        if (Mathf.Abs(dir.y) > 1e-6f)
+        {
+            tyMin = (bounds.min.y - origin.y) / dir.y;
+            tyMax = (bounds.max.y - origin.y) / dir.y;
+            if (tyMin > tyMax) (tyMin, tyMax) = (tyMax, tyMin);
+        }
+        else
+        {
+            tyMin = float.NegativeInfinity;
+            tyMax = float.PositiveInfinity;
+        }
+
+        float tExit = Mathf.Min(txMax, tyMax);
+        return Mathf.Max(tExit, enterDistance);
+    }
+
+    // Combines a radius fade and an angle fade, multiplied together so a pixel only
+    // counts as visible if it's within both the (obstacle-clipped) radius and the angle.
+    private static float ComputeVisibility(
+        float distWorld, float angleFromForwardDeg,
+        float circleEffectiveRadius, float coneEffectiveRadius,
+        float halfConeAngleDeg, float radialFeather, float angleFeatherDeg)
+    {
+        float safeRadial = Mathf.Max(radialFeather, 0.001f);
+        float safeAngle = Mathf.Max(angleFeatherDeg, 0.001f);
+
+        float circleAlpha = 1f - Mathf.Clamp01((distWorld - (circleEffectiveRadius - safeRadial)) / safeRadial);
+
+        float coneRadiusAlpha = 1f - Mathf.Clamp01((distWorld - (coneEffectiveRadius - safeRadial)) / safeRadial);
+        float coneAngleAlpha = 1f - Mathf.Clamp01((angleFromForwardDeg - (halfConeAngleDeg - safeAngle)) / safeAngle);
+        float coneAlpha = coneRadiusAlpha * coneAngleAlpha;
+
+        return Mathf.Clamp01(Mathf.Max(circleAlpha, coneAlpha));
+    }
+
+    private float SampleObstacleDistance(float angleDeg, float rayStepDeg)
+    {
+        float idxF = angleDeg / rayStepDeg;
+        int i0 = (int)idxF % occlusionRayCount;
+        int i1 = (i0 + 1) % occlusionRayCount;
+        float t = idxF - (int)idxF;
+        return Mathf.Lerp(visibleDistances[i0], visibleDistances[i1], t);
     }
 }

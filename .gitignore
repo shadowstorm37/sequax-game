@@ -13,6 +13,7 @@
 /[Aa]ssets/AssetStoreTools*
 .vs/
 .vscode/
+.vsconfig
 .idea/
 *.csproj
 *.sln
