@@ -5,7 +5,6 @@ using UnityEngine.SceneManagement;
 
 public class UIManager : MonoBehaviour
 {
-
     [SerializeField] private GameObject pauseMenuUI; // PauseMenu Image kept here
 
     private bool isPaused = false;
@@ -29,8 +28,9 @@ public class UIManager : MonoBehaviour
             resumeAudio.ignoreListenerPause = true; // Tells Unity to play this audio even if game time is 0
         }
 
-        // CHECK IF MAIN MENU: If buildIndex is 0, unlock the mouse so players can click buttons
-        if (SceneManager.GetActiveScene().buildIndex == 0)
+        // UNLOCK MOUSE: Unlock for Main Menu or the WinsGame victory scene so players can click buttons
+        string currentScene = SceneManager.GetActiveScene().name;
+        if (currentScene == "MainMenu" || currentScene == "WinsGame" || SceneManager.GetActiveScene().buildIndex == 0)
         {
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
@@ -44,10 +44,14 @@ public class UIManager : MonoBehaviour
 
     void Update()
     {
-        // Only allow pausing if we are NOT on the main menu
-        if (SceneManager.GetActiveScene().buildIndex != 0 && Input.GetKeyDown(KeyCode.Escape))
+        // Block pausing if we are on the Main Menu OR the WinsGame screen
+        string currentScene = SceneManager.GetActiveScene().name;
+        if (currentScene != "WinsGame" && SceneManager.GetActiveScene().buildIndex != 0)
         {
-            TogglePause();
+            if (Input.GetKeyDown(KeyCode.Escape))
+            {
+                TogglePause();
+            }
         }
     }
 
@@ -94,11 +98,18 @@ public class UIManager : MonoBehaviour
         TogglePause();
     }
 
+    // Returns the player to the Main Menu screen from anywhere (including WinsGame)
+    public void OnMainMenuPress()
+    {
+        Time.timeScale = 1f;
+        SceneManager.LoadScene("MainMenu"); // Safely loads your main menu by its string name
+    }
+
     // Exits the game when the player clicks on Exit Game button
     public void OnExitGamePress()
     {
 #if UNITY_EDITOR
-            UnityEditor.EditorApplication.isPlaying = false; 
+        UnityEditor.EditorApplication.isPlaying = false; 
 #else
         Application.Quit();
 #endif
