@@ -15,6 +15,12 @@ public class PlayerScript : MonoBehaviour
     [Tooltip("Degrees per second the player turns to face FacingDirection.")]
     [SerializeField] private float rotationSpeed = 720f;
 
+    [Header("Directional Movement Penalty")]
+    [Tooltip("Speed multiplier when moving in the direction you're facing (into your own vision cone).")]
+    [SerializeField, Range(0f, 1f)] private float forwardSpeedMultiplier = 1f;
+    [Tooltip("Speed multiplier when moving directly away from the direction you're facing (backpedaling, blind to what's behind you). Strafing lands between this and the forward multiplier.")]
+    [SerializeField, Range(0f, 1f)] private float backwardSpeedMultiplier = 0.6f;
+
     [Header("Stamina")]
     [SerializeField] private float maxStamina = 100f;
     [SerializeField] private float staminaDrainPerSecond = 25f;
@@ -133,7 +139,19 @@ public class PlayerScript : MonoBehaviour
             _ => 0f
         };
 
-        rb.linearVelocity = moveInput * speed;
+        rb.linearVelocity = moveInput * speed * GetDirectionalSpeedMultiplier();
+    }
+
+    // Full speed moving into your own facing/vision direction, reduced speed moving
+    // away from it (backpedaling into what you can't see), with strafing landing
+    // smoothly in between based on how aligned moveInput is with FacingDirection.
+    private float GetDirectionalSpeedMultiplier()
+    {
+        if (moveInput.sqrMagnitude < 0.0001f) return 1f;
+
+        float dot = Vector2.Dot(moveInput, FacingDirection);
+        float t = (dot + 1f) * 0.5f; // 0 = directly backward, 1 = directly forward
+        return Mathf.Lerp(backwardSpeedMultiplier, forwardSpeedMultiplier, t);
     }
 
     private void RotateTowardsFacing()

@@ -249,6 +249,48 @@ public class VisionConeMask : MonoBehaviour
         return Mathf.Clamp01(Mathf.Max(circleAlpha, coneAlpha));
     }
 
+    /// <summary>
+    /// Continuous 0-1 visibility for a single world point - same radius/angle fade
+    /// used for the desaturation texture, but sampled directly instead of baked into
+    /// a texture. Use this (instead of IsPointVisible) when you want a smooth fade
+    /// in/out rather than a hard cut, e.g. for DetectableVisibility.
+    /// </summary>
+    public float SampleVisibility(Vector2 worldPoint)
+    {
+        if (player == null) return 0f;
+
+        Vector2 origin = transform.position;
+        Vector2 toPoint = worldPoint - origin;
+        float distWorld = toPoint.magnitude;
+
+        float maxRadius = Mathf.Max(coneRadius, circleRadius);
+        if (distWorld > maxRadius + fadeWidth) return 0f;
+
+        float obstacleDist = maxRadius;
+        if (distWorld > 0.0001f)
+        {
+            RaycastHit2D hit = Physics2D.Raycast(origin, toPoint.normalized, distWorld, obstacleLayerMask);
+            if (hit.collider != null)
+            {
+                obstacleDist = hit.distance;
+                if (distWorld > obstacleDist) return 0f; // point itself is behind the obstacle
+            }
+        }
+
+        Vector2 facing = player.FacingDirection;
+        float facingAngleDeg = Mathf.Atan2(facing.y, facing.x) * Mathf.Rad2Deg;
+        float pointAngleDeg = Mathf.Atan2(toPoint.y, toPoint.x) * Mathf.Rad2Deg;
+        float angleFromForwardDeg = Mathf.Abs(Mathf.DeltaAngle(pointAngleDeg, facingAngleDeg));
+
+        float circleEffectiveRadius = Mathf.Min(circleRadius, obstacleDist);
+        float coneEffectiveRadius = Mathf.Min(coneRadius, obstacleDist);
+        float halfConeAngleDeg = coneAngleDegrees * 0.5f;
+
+        return ComputeVisibility(
+            distWorld, angleFromForwardDeg, circleEffectiveRadius, coneEffectiveRadius,
+            halfConeAngleDeg, fadeWidth, fadeAngleDegrees);
+    }
+
     private float SampleObstacleDistance(float angleDeg, float rayStepDeg)
     {
         float idxF = angleDeg / rayStepDeg;
