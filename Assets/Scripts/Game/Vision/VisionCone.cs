@@ -188,10 +188,10 @@ public class VisionConeMask : MonoBehaviour
                 continue;
             }
 
-            // Reveal all the way through the obstacle itself (so it's actually visible,
-            // not just its near face) and only go dark once the ray has exited its bounds.
-            float exitDistance = RayBoundsExitDistance(origin, dir, hit.collider.bounds, hit.distance);
-            visibleDistances[i] = Mathf.Min(exitDistance, maxCastRadius);
+            // Stop at the obstacle's near surface, same as any other occluder - obstacles
+            // outside the cone/circle should gray out like everything else, not stay lit
+            // just because part of them pokes into view.
+            visibleDistances[i] = Mathf.Min(hit.distance, maxCastRadius);
         }
 
         float halfConeAngleDeg = coneAngleDegrees * 0.5f;
@@ -228,40 +228,6 @@ public class VisionConeMask : MonoBehaviour
         Shader.SetGlobalTexture(VisionTexId, visionTexture);
         Shader.SetGlobalVector(VisionOriginId, origin);
         Shader.SetGlobalFloat(VisionWorldDiameterId, worldDiameter);
-    }
-
-    // Standard ray/AABB slab test, used to find where a ray exits an obstacle's bounds
-    // rather than just where it first touches them.
-    private static float RayBoundsExitDistance(Vector2 origin, Vector2 dir, Bounds bounds, float enterDistance)
-    {
-        float txMin, txMax;
-        if (Mathf.Abs(dir.x) > 1e-6f)
-        {
-            txMin = (bounds.min.x - origin.x) / dir.x;
-            txMax = (bounds.max.x - origin.x) / dir.x;
-            if (txMin > txMax) (txMin, txMax) = (txMax, txMin);
-        }
-        else
-        {
-            txMin = float.NegativeInfinity;
-            txMax = float.PositiveInfinity;
-        }
-
-        float tyMin, tyMax;
-        if (Mathf.Abs(dir.y) > 1e-6f)
-        {
-            tyMin = (bounds.min.y - origin.y) / dir.y;
-            tyMax = (bounds.max.y - origin.y) / dir.y;
-            if (tyMin > tyMax) (tyMin, tyMax) = (tyMax, tyMin);
-        }
-        else
-        {
-            tyMin = float.NegativeInfinity;
-            tyMax = float.PositiveInfinity;
-        }
-
-        float tExit = Mathf.Min(txMax, tyMax);
-        return Mathf.Max(tExit, enterDistance);
     }
 
     // Combines a radius fade and an angle fade, multiplied together so a pixel only
