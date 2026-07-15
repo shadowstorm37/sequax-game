@@ -16,7 +16,7 @@ public class SoundAwareness : MonoBehaviour
     public Vector2 TargetSoundLocation;
     public SoundType TargetSoundType;
     public float TargetSoundLoudness; 
-    public string LastSoundSourceTag; // <--- NEW: Track the tag of the source
+    public string LastSoundSourceTag; 
 
     [Header("Acoustic Bounds")]
     [SerializeField] private float _playerTooCloseDistance = 2f; 
@@ -44,7 +44,7 @@ public class SoundAwareness : MonoBehaviour
     {
         CleanExpiredSounds(decayDuration: 2.0f);
 
-        // 1. Proximity Aggro Override
+        // 1. Proximity Aggro Override (The absolute loudest sound/threat)
         if (_player != null)
         {
             Vector2 enemyToPlayerVector = (Vector2)_player.position - (Vector2)transform.position;
@@ -56,6 +56,7 @@ public class SoundAwareness : MonoBehaviour
                 IsHearingSound = true;
                 TargetSoundLocation = _player.position;
                 TargetSoundLoudness = 999f; 
+                LastSoundSourceTag = _player.tag; // Instantly target the player's tag
                 return; 
             }
         }
@@ -63,12 +64,23 @@ public class SoundAwareness : MonoBehaviour
         // 2. Process the Loudest Sound on Stack
         if (_perceivedSoundsStack.Count > 0)
         {
+            // Because the stack is sorted descending, index 0 is always the loudest active sound
             HeardSoundNode dominantSound = _perceivedSoundsStack[0];
             
             IsHearingSound = true;
             TargetSoundLocation = dominantSound.Data.position;
             TargetSoundType = dominantSound.Data.type;
             TargetSoundLoudness = dominantSound.Data.loudness;
+
+            // FIX: Keep the source tag synchronized with the loudest sound being targeted
+            if (dominantSound.Data.source != null)
+            {
+                LastSoundSourceTag = dominantSound.Data.source.tag;
+            }
+            else
+            {
+                LastSoundSourceTag = "Untagged";
+            }
 
             Vector2 monsterToSound = TargetSoundLocation - (Vector2)transform.position;
             DirectionToSound = monsterToSound.normalized;
@@ -78,6 +90,7 @@ public class SoundAwareness : MonoBehaviour
             IsHearingSound = false;
             TargetSoundLoudness = 0f;
             DirectionToSound = Vector2.zero;
+            LastSoundSourceTag = "Untagged";
         }
     }
 
@@ -93,16 +106,6 @@ public class SoundAwareness : MonoBehaviour
 
     private void ReactToSound(SoundEvent soundData)
     {
-        // 1. Capture the tag if a source exists
-        if (soundData.source != null)
-        {
-            LastSoundSourceTag = soundData.source.tag;
-        }
-        else
-        {
-            LastSoundSourceTag = "Untagged";
-        }
-
         HeardSoundNode newSound = new HeardSoundNode
         {
             Data = soundData,
@@ -110,6 +113,8 @@ public class SoundAwareness : MonoBehaviour
         };
 
         _perceivedSoundsStack.Add(newSound);
+        
+        // Sorts descending: loudest sound (highest loudness value) ends up at index 0
         _perceivedSoundsStack.Sort((a, b) => b.Data.loudness.CompareTo(a.Data.loudness));
     }
 
@@ -132,7 +137,7 @@ public class SoundAwareness : MonoBehaviour
         }
     }
 
-    // NEW GIZMO RENDER PROCEDURES
+    // GIZMO RENDER PROCEDURES
     private void OnDrawGizmos()
     {
         if (!_debugDrawHearingRange || _hearingRange <= 0f) return;
