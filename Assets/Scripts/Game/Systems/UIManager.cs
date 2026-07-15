@@ -25,8 +25,8 @@ public class UIManager : MonoBehaviour
         }
         else
         {
-            Cursor.lockState = CursorLockMode.Locked;
-            Cursor.visible = false;
+            Cursor.lockState = CursorLockMode.None;
+            Cursor.visible = true;
         }
     }
 
@@ -50,8 +50,8 @@ public class UIManager : MonoBehaviour
         }
 
         Time.timeScale = isPaused ? 0f : 1f;
-        Cursor.lockState = isPaused ? CursorLockMode.None : CursorLockMode.Locked;
-        Cursor.visible = isPaused;
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
     }
 
     // Loads the first level (Scene index 1) when Start Game is pressed
