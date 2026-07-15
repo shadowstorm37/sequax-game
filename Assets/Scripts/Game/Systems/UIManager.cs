@@ -17,6 +17,18 @@ public class UIManager : MonoBehaviour
 
         Time.timeScale = 1f;
 
+        // Forces the Resume button speaker to bypass the pause state ---
+        AudioSource resumeAudio = GetComponent<AudioSource>();
+        if (resumeAudio == null && pauseMenuUI != null)
+        {
+            resumeAudio = pauseMenuUI.GetComponentInChildren<AudioSource>();
+        }
+
+        if (resumeAudio != null)
+        {
+            resumeAudio.ignoreListenerPause = true; // Tells Unity to play this audio even if game time is 0
+        }
+
         // CHECK IF MAIN MENU: If buildIndex is 0, unlock the mouse so players can click buttons
         if (SceneManager.GetActiveScene().buildIndex == 0)
         {
@@ -71,6 +83,14 @@ public class UIManager : MonoBehaviour
     // When return to game button is pressed, it will resume play
     public void OnResumeGamePress()
     {
+        // Try to find the AudioSource on this button or its canvas and play the click
+        AudioSource audio = GetComponent<AudioSource>();
+        if (audio != null)
+        {
+            audio.Play(); // Using .Play() instead of .PlayOneShot works better at timescale 0
+        }
+
+        // Resume the game timeline and hide the menu
         TogglePause();
     }
 
