@@ -32,6 +32,13 @@ public class PlayerScript : MonoBehaviour
     [SerializeField] private float walkLoudness = 5f;
     [SerializeField] private float sprintLoudness = 10f;
 
+    [Header("Footstep Audio")]
+    [SerializeField] private AudioSource footstepAudioSource;
+    [SerializeField] private AudioClip grassFootstep;
+    [SerializeField, Range(0f, 1f)] private float crouchFootstepVolume = 0.15f;
+    [SerializeField, Range(0f, 1f)] private float walkFootstepVolume = 0.25f;
+    [SerializeField, Range(0f, 1f)] private float sprintFootstepVolume = 0.35f;
+
     public MovementState CurrentState { get; private set; } = MovementState.Idle;
     public Image staminaBar;
     public float Stamina { get; private set; }
@@ -179,6 +186,17 @@ public class PlayerScript : MonoBehaviour
 
     private void EmitFootstepSound()
     {
+        float volume = CurrentState switch
+        {
+            MovementState.Crouch => crouchFootstepVolume,
+            MovementState.Sprint => sprintFootstepVolume,
+            _ => walkFootstepVolume
+        };
+
+        if (footstepAudioSource != null && grassFootstep != null)
+        {
+            footstepAudioSource.PlayOneShot(grassFootstep, volume);
+        }
         if (SoundManager.Instance == null) return;
 
         float loudness = CurrentState switch
