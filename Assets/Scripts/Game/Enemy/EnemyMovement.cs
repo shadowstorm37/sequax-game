@@ -1,5 +1,5 @@
 using UnityEngine;
-using UnityEngine.SceneManagement; // Added for scene switching
+using UnityEngine.SceneManagement; 
 
 public class EnemyMovement : MonoBehaviour
 {
@@ -10,46 +10,49 @@ public class EnemyMovement : MonoBehaviour
     
     [Header("Player Tracking / Aggro")]
     [SerializeField] private string _playerTag = "Player";
-    [SerializeField] private float _timeToAttack = 10f; // seconds of continuous tracking before attacking
-    [SerializeField] private float _minPlayerDistance = 3f; // Enemy won't get closer than this to the player in tracking mode
-    [SerializeField] private float _instantAttackDistance = 2f; // Instantly triggers attack mode if player is within this distance
-    [SerializeField] private float _passiveTrackingRange = 5f;  // NEW: Tracking timer goes up if player is within this range, even if completely silent
+    [SerializeField] private float _timeToAttack = 10f; 
+    [SerializeField] private float _minPlayerDistance = 3f; 
+    [SerializeField] private float _instantAttackDistance = 2f; 
+    [SerializeField] private float _passiveTrackingRange = 5f;  
     
+    // NEW: Reference to the vision cone script to check visibility
+    [Header("Vision Evasion")]
+    [SerializeField] private VisionConeMask _playerVision; // Replace VisionConeMask with your actual script name if different
+    [SerializeField] private float _evasionSpeed = 8f;     // How fast they scramble out of the light
+
     [Header("Hiding / Cover")]
-    [SerializeField] private float _coverSearchRadius = 6f; // Max distance from the player to look for cover
-    [SerializeField] private float _hideOffset = 0.5f;        // Extra buffer distance behind the cover object
-    [SerializeField] private float _hideStoppingDistance = 0.2f; // Accuracy of stopping behind cover
-    [SerializeField] private float _minCoverTime = 2f;       // Minimum time to hold cover before switching
-    [SerializeField] private float _maxCoverTime = 3f;      // Maximum time to hold cover before switching
+    [SerializeField] private float _coverSearchRadius = 6f; 
+    [SerializeField] private float _hideOffset = 0.5f;        
+    [SerializeField] private float _hideStoppingDistance = 0.2f; 
+    [SerializeField] private float _minCoverTime = 2f;       
+    [SerializeField] private float _maxCoverTime = 3f;      
 
     [Header("Obstacle Avoidance")]
     [SerializeField] private float _obstacleCheckCircleRadius;
     [SerializeField] private float _obstacleCheckDistance;
     [SerializeField] private LayerMask _obstacleLayerMask;
     [SerializeField] private float _repulsionForce = 0.5f;
-    [SerializeField] private float _avoidanceSmoothing = 8f; // Higher = faster steering, Lower = smoother/wider turns
+    [SerializeField] private float _avoidanceSmoothing = 8f; 
 
     [Header("Investigation")]
     [SerializeField] private float _trackingAreaRadius = 1.5f;
     [SerializeField] private float _attackModeDuration = 7f;
 
     private float _currentDynamicSpeed;
-    [SerializeField] private float _trackingTimer;   // how long we've been continuously tracking the player
-    [SerializeField] private float _attackTimer;     // countdown while actively attacking
+    [SerializeField] private float _trackingTimer;   
+    [SerializeField] private float _attackTimer;     
     private bool _inAttackMode;
     private bool _isAtCover; 
+    private bool _isEvadingVision; // NEW: Track if we are actively dodging light
     private float _baseRotationSpeed;
     private Rigidbody2D _rigidbody;
     private SoundAwareness _playerAwarenessController;
     
-    private Vector2 _desiredDirection; // Where the enemy *wants* to go
-    private Vector2 _targetDirection;  // The smoothly blended direction the enemy actually moves
+    private Vector2 _desiredDirection; 
+    private Vector2 _targetDirection;  
     private RaycastHit2D[] _obstacleCollisions;
     
-    // Direct reference to the player's transform for homing in during Attack Mode
     private Transform _playerTransform; 
-
-    // Track the current active cover collider and the last cover we switched from
     private Collider2D _activeCover;
     private Collider2D _previousCover;
     private float _coverSwitchTimer;
@@ -58,6 +61,7 @@ public class EnemyMovement : MonoBehaviour
     {
         _inAttackMode = false;
         _isAtCover = false;
+        _isEvadingVision = false;
         _trackingTimer = 0f;
         _attackTimer = 0f;
         _rigidbody = GetComponent<Rigidbody2D>();
@@ -65,11 +69,14 @@ public class EnemyMovement : MonoBehaviour
         _obstacleCollisions = new RaycastHit2D[10];
         _baseRotationSpeed = _rotationSpeed;
 
-        // Locate the player object using your configured tag
         GameObject playerObj = GameObject.FindWithTag(_playerTag);
         if (playerObj != null)
         {
             _playerTransform = playerObj.transform;
+            
+            // NEW: Auto-grab the vision script if you forget to assign it in the Inspector
+            if (_playerVision == null)
+                _playerVision = playerObj.GetComponentInChildren<VisionConeMask>(); 
         }
     }
 
@@ -78,6 +85,7 @@ public class EnemyMovement : MonoBehaviour
         // --- Instant Proximity Aggro Check ---
         float distanceToPlayer = float.MaxValue;
         bool isPlayerWithinPassiveRange = false;
+        bool isVisibleToPlayer = false; // NEW
 
         if (_playerTransform != null)
         {
@@ -91,28 +99,30 @@ public class EnemyMovement : MonoBehaviour
 
             // 2. Check if player is within silent passive tracking distance
             isPlayerWithinPassiveRange = distanceToPlayer <= _passiveTrackingRange;
+            
+            // NEW: 3. Check if enemy is currently inside the vision cone
+            if (_playerVision != null)
+            {
+                isVisibleToPlayer = _playerVision.IsPointVisible(transform.position);
+            }
         }
 
-        // Check directly if SoundAwareness is actively hearing a sound that intersected ranges
         bool hearingSound = _playerAwarenessController.IsHearingSound;
         Vector2 targetPos = _playerAwarenessController.TargetSoundLocation;
         float targetLoudness = _playerAwarenessController.TargetSoundLoudness;
         
-        // Ensure we only identify a player if we are actively hearing a sound
         string soundTag = hearingSound ? _playerAwarenessController.LastSoundSourceTag : "";
         bool isHearingPlayerSound = soundTag == _playerTag;
 
         Vector2 movementTargetPosition = targetPos;
         bool wasAtCover = _isAtCover;
-        _isAtCover = false; // Reset state to recalculate below
+        _isAtCover = false; 
+        _isEvadingVision = false; // Reset evasion state every frame
 
-        // --- Cover Footprint Sound Verification ---
         bool soundIsWithinCurrentCover = false;
         if (hearingSound && _activeCover != null)
         {
             float coverRadius = _activeCover.bounds.extents.magnitude;
-            
-            // Check if the sound point overlaps the physical collider or falls within its radius
             if (_activeCover.OverlapPoint(targetPos) || Vector2.Distance(targetPos, _activeCover.bounds.center) <= coverRadius)
             {
                 soundIsWithinCurrentCover = true;
@@ -122,75 +132,62 @@ public class EnemyMovement : MonoBehaviour
         // --- Movement & State Resolution ---
         if (_inAttackMode)
         {
-            _activeCover = null; // Break cover during active chase
+            _activeCover = null; 
             _previousCover = null;
             HandleAttackingMode();
             if (_playerTransform != null) movementTargetPosition = _playerTransform.position;
         }
+        else if (isVisibleToPlayer) // NEW: Evasion State (Highest priority outside of Attack Mode)
+        {
+            _isEvadingVision = true;
+            _activeCover = null;     // Break cover immediately
+            _previousCover = null;
+            HandleEvasionMode();     // Steer perpendicular to the vision cone
+        }
         else if (soundIsWithinCurrentCover)
         {
-            // The sound is within our cover footprint: Freeze movement, but maintain cover orientation
             _desiredDirection = Vector2.zero;
-            _isAtCover = wasAtCover; // Hold our previous "at cover" state so we keep facing the player
-
-            // Tick down the cover switch timer even if we are holding our ground due to sound overlapping
+            _isAtCover = wasAtCover; 
             UpdateCoverTimer(targetPos);
         }
-        else if (hearingSound) // If SoundAwareness registers a sound, we decide whether to hide or track
+        else if (hearingSound) 
         {
             if (isHearingPlayerSound)
             {
-                // Try to find a valid obstacle to hide behind relative to the player (excluding the previous cover)
                 if (TryFindCoverSpot(targetPos, out Vector2 hidePosition, _previousCover))
                 {
                     movementTargetPosition = hidePosition;
                     HandleMoveToPosition(hidePosition, _hideStoppingDistance);
 
-                    // If we are within stopping distance of our cover position, we are officially "in cover"
                     if (Vector2.Distance(transform.position, hidePosition) <= _hideStoppingDistance)
                     {
-                        if (!wasAtCover)
-                        {
-                            // Reset the timer when we first successfully arrive at a new cover spot
-                            ResetCoverTimer();
-                        }
+                        if (!wasAtCover) ResetCoverTimer();
                         _isAtCover = true;
                     }
                 }
                 else if (_previousCover != null && TryFindCoverSpot(targetPos, out hidePosition, null))
                 {
-                    // Fallback: If no *other* cover exists, allow using the previous cover rather than running into the open
                     movementTargetPosition = hidePosition;
                     HandleMoveToPosition(hidePosition, _hideStoppingDistance);
 
                     if (Vector2.Distance(transform.position, hidePosition) <= _hideStoppingDistance)
                     {
-                        if (!wasAtCover)
-                        {
-                            // Reset the timer when we first successfully arrive at a new cover spot
-                            ResetCoverTimer();
-                        }
+                        if (!wasAtCover) ResetCoverTimer();
                         _isAtCover = true;
                     }
                 }
                 else
                 {
-                    // Fallback to tracking player directly if no cover is available
                     _activeCover = null;
                     _previousCover = null;
                     movementTargetPosition = targetPos;
                     HandleTrackMode(targetPos, targetLoudness, isHearingPlayerSound);
                 }
 
-                // If we are actively at our cover destination, manage our switching countdown
-                if (_isAtCover)
-                {
-                    UpdateCoverTimer(targetPos);
-                }
+                if (_isAtCover) UpdateCoverTimer(targetPos);
             }
             else
             {
-                // Non-player sound: Track normally, no hiding behavior and no minimum distance restriction
                 _activeCover = null;
                 _previousCover = null;
                 movementTargetPosition = targetPos;
@@ -199,18 +196,20 @@ public class EnemyMovement : MonoBehaviour
         }
         else
         {
-            // Not hearing anything: Stop moving
             _desiredDirection = Vector2.zero;
-            _previousCover = null; // Clear history when player is lost
+            _previousCover = null; 
         }
 
         // --- Unified Tracking Timer Resolution ---
-        // We evaluate this independently of whether the enemy is pathfinding, hiding, or idling.
-        bool shouldTrackPlayer = isHearingPlayerSound || isPlayerWithinPassiveRange;
+        // NEW: Being in the vision cone also increases the tracking timer (they aggro faster when looking right at them)
+        bool shouldTrackPlayer = isHearingPlayerSound || isPlayerWithinPassiveRange || isVisibleToPlayer;
 
         if (!_inAttackMode && shouldTrackPlayer)
         {
-            _trackingTimer += Time.fixedDeltaTime;
+            // If they are actively visible to the player, double the aggro rate
+            float aggroMultiplier = isVisibleToPlayer ? 2f : 1f;
+            _trackingTimer += Time.fixedDeltaTime * aggroMultiplier;
+            
             if (_trackingTimer >= _timeToAttack)
             {
                 EnterAttackMode();
@@ -218,18 +217,46 @@ public class EnemyMovement : MonoBehaviour
         }
         else if (!_inAttackMode)
         {
-            // Slowly decay the suspicion meter if the player is completely out of range and silent
             _trackingTimer = Mathf.Max(0f, _trackingTimer - Time.fixedDeltaTime / 20f);
         }
 
         // --- Physics & Translation Execution ---
-        if (!_inAttackMode) CalculateExponentialSpeed(movementTargetPosition);
         
-        // Process obstacle avoidance and smoothly update _targetDirection
+        // NEW: Do not use exponential targeting speed if we are running away (evading)
+        if (!_inAttackMode && !_isEvadingVision) CalculateExponentialSpeed(movementTargetPosition);
+        
         ResolveObstaclesAndAvoidJitter();
-        
         RotateTowardsTarget();
         SetVelocity();
+    }
+
+    // NEW: Method to calculate fleeing trajectory
+    private void HandleEvasionMode()
+    {
+        if (_playerTransform == null) return;
+
+        // Force a specific fast speed while dodging the light
+        _currentDynamicSpeed = _evasionSpeed;
+
+        // Assuming your player's forward vision direction matches transform.up in 2D. 
+        // (Change this to _playerTransform.right if your player sprite faces along the X axis)
+        Vector2 playerLookDirection = _playerTransform.up; 
+        Vector2 vectorToEnemy = ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized;
+
+        // Calculate the two vectors perpendicular to the player's line of sight
+        Vector2 perpRight = new Vector2(-playerLookDirection.y, playerLookDirection.x);
+        Vector2 perpLeft = new Vector2(playerLookDirection.y, -playerLookDirection.x);
+
+        // Dot product checks which side of the cone center-line the enemy is currently on.
+        // We pick the perpendicular direction that moves them *further* in that direction (fastest way out).
+        if (Vector2.Dot(perpRight, vectorToEnemy) > 0)
+        {
+            _desiredDirection = perpRight;
+        }
+        else
+        {
+            _desiredDirection = perpLeft;
+        }
     }
 
     private void ResetCoverTimer()
@@ -242,12 +269,10 @@ public class EnemyMovement : MonoBehaviour
         _coverSwitchTimer -= Time.fixedDeltaTime;
         if (_coverSwitchTimer <= 0f)
         {
-            // Store our current cover as the "previous" one to avoid immediately backtracking to it
             _previousCover = _activeCover;
             _activeCover = null; 
             _isAtCover = false;
             
-            // Re-evaluate cover search immediately using the updated blacklist
             TryFindCoverSpot(playerPosition, out _, _previousCover);
             ResetCoverTimer();
         }
@@ -275,26 +300,18 @@ public class EnemyMovement : MonoBehaviour
     private bool TryFindCoverSpot(Vector2 playerPosition, out Vector2 hidePosition, Collider2D ignoreCover = null)
     {
         hidePosition = Vector2.zero;
-        
-        // Find all colliders within the cover radius of the player
         Collider2D[] potentialCovers = Physics2D.OverlapCircleAll(playerPosition, _coverSearchRadius, _obstacleLayerMask);
         
         Collider2D bestCover = null;
         float closestDistanceToEnemy = float.MaxValue;
-
-        // Get the specific layer index for the "Obstacles" layer
         int obstaclesLayer = LayerMask.NameToLayer("Obstacles");
 
         foreach (Collider2D col in potentialCovers)
         {
-            // Ignore self, triggers, disabled colliders, or the blacklisted cover we are trying to switch away from
             if (col == null || col.gameObject == gameObject || col.isTrigger || !col.enabled) continue;
             if (ignoreCover != null && col == ignoreCover) continue;
-
-            // 1. STRICT LAYER CHECK: Must belong to the "Obstacles" layer
             if (col.gameObject.layer != obstaclesLayer) continue;
 
-            // 2. STRICT 2D COLLIDER CHECK: Must be a physical 2D collider type
             if (!(col is PolygonCollider2D || col is BoxCollider2D || col is CircleCollider2D || col is CapsuleCollider2D || col is CompositeCollider2D))
             {
                 continue;
@@ -302,18 +319,13 @@ public class EnemyMovement : MonoBehaviour
 
             Vector2 obstacleCenter = col.bounds.center;
             float distanceToPlayer = Vector2.Distance(playerPosition, obstacleCenter);
-            
-            // Get the bounding radius of this collider to ensure the ENTIRE object fits inside the range
-            // (Note: comparison operator changed to a safe word format for processing)
             float obstacleBoundingRadius = col.bounds.extents.magnitude;
 
-            // Enforce rule: The obstacle must be FULLY within the range from the player
             if (distanceToPlayer + obstacleBoundingRadius > _coverSearchRadius)
             {
-                continue; // Too far away or partially leaks out of the range limit
+                continue; 
             }
 
-            // Find the closest valid cover to the enemy's current position to minimize transit time
             float distanceToEnemy = Vector2.Distance(transform.position, obstacleCenter);
             if (distanceToEnemy < closestDistanceToEnemy)
             {
@@ -322,19 +334,14 @@ public class EnemyMovement : MonoBehaviour
             }
         }
 
-        // Assign the active cover reference
         _activeCover = bestCover;
 
-        // If we successfully identified a valid cover object, calculate the coordinates behind it
         if (_activeCover != null)
         {
             Vector2 coverCenter = _activeCover.bounds.center;
             Vector2 directionFromPlayerToCover = (coverCenter - playerPosition).normalized;
-            
-            // Determine the thickness of the obstacle along the hiding line
             float obstacleRadius = _activeCover.bounds.extents.magnitude;
             
-            // Position coordinates: Center + direction offset * (radius + safety offset)
             hidePosition = coverCenter + (directionFromPlayerToCover * (obstacleRadius + _hideOffset));
             return true;
         }
@@ -365,7 +372,6 @@ public class EnemyMovement : MonoBehaviour
         _attackTimer = _attackModeDuration;
         _trackingTimer = 0f;
 
-        // Set direction immediately
         SetAttackDirection();
     }
 
@@ -470,8 +476,6 @@ public class EnemyMovement : MonoBehaviour
         }
     }
 
-    // --- Added Player Collision Handlers ---
-
     private void OnCollisionEnter2D(Collision2D collision)
     {
         CheckPlayerTouch(collision.gameObject);
@@ -501,11 +505,9 @@ public class EnemyMovement : MonoBehaviour
             Gizmos.DrawWireSphere(_playerTransform.position, _minPlayerDistance);
         }
 
-        // Draw the instant panic range around the enemy
         Gizmos.color = Color.magenta;
         Gizmos.DrawWireSphere(transform.position, _instantAttackDistance);
 
-        // NEW: Draw the passive tracking area in blue around the enemy
         Gizmos.color = Color.cyan;
         Gizmos.DrawWireSphere(transform.position, _passiveTrackingRange);
     }
