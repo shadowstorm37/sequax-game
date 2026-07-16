@@ -14,9 +14,13 @@ Shader "FullScreen/VisionDesaturate"
 {
     // _DarknessFloor: outside the vision cone, grayscale is multiplied by this before
     // display. 0 = pitch black, 1 = no darkening at all.
+    // _VignetteStrength / _VignetteStart: subtle darkening toward the screen edges.
+    // Strength 0 = off; Start is how far out (0 center .. 1 corner) the fade begins.
     Properties
     {
         _DarknessFloor("Darkness Floor", Range(0, 1)) = 0.2
+        _VignetteStrength("Vignette Strength", Range(0, 1)) = 0.6
+        _VignetteStart("Vignette Start", Range(0, 1)) = 0.5
     }
 
     SubShader
@@ -45,6 +49,8 @@ Shader "FullScreen/VisionDesaturate"
             float2 _VisionCamWorldPos;
             float _VisionOrthoSize;
             float _DarknessFloor;
+            float _VignetteStrength;
+            float _VignetteStart;
 
             half4 Frag(Varyings input) : SV_Target
             {
@@ -81,6 +87,13 @@ Shader "FullScreen/VisionDesaturate"
                 // Multiplying the floor in (rather than alpha-blending an overlay) means there's
                 // nothing left to compound into haze.
                 half3 finalColor = lerp(darkOutside, sceneColor.rgb, visibility);
+
+                // Subtle edge vignette: 0 at center, ~1 at the corners, darkening past _VignetteStart.
+                float2 vigCoord = uv - 0.5;
+                float vigDist = length(vigCoord) * 1.41421356; // reach 1.0 at the corners
+                float vignette = 1.0 - smoothstep(_VignetteStart, 1.0, vigDist) * _VignetteStrength;
+                finalColor *= vignette;
+
                 return half4(finalColor, sceneColor.a);
             }
             ENDHLSL
