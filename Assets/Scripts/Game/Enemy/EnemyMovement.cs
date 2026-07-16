@@ -15,10 +15,10 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _instantAttackDistance = 2f; 
     [SerializeField] private float _passiveTrackingRange = 5f;  
     
-    // NEW: Reference to the vision cone script to check visibility
     [Header("Vision Evasion")]
-    [SerializeField] private VisionConeMask _playerVision; // Replace VisionConeMask with your actual script name if different
-    [SerializeField] private float _evasionSpeed = 8f;     // How fast they scramble out of the light
+    [SerializeField] private VisionConeMask _playerVision; 
+    [SerializeField] private float _evasionSpeed = 8f;     
+    [SerializeField] private float _maxVisionEvadeDistance = 15f; // NEW: Enemy ignores vision cone beyond this distance
 
     [Header("Hiding / Cover")]
     [SerializeField] private float _coverSearchRadius = 6f; 
@@ -43,7 +43,7 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _attackTimer;     
     private bool _inAttackMode;
     private bool _isAtCover; 
-    private bool _isEvadingVision; // NEW: Track if we are actively dodging light
+    private bool _isEvadingVision; 
     private float _baseRotationSpeed;
     private Rigidbody2D _rigidbody;
     private SoundAwareness _playerAwarenessController;
@@ -74,7 +74,6 @@ public class EnemyMovement : MonoBehaviour
         {
             _playerTransform = playerObj.transform;
             
-            // NEW: Auto-grab the vision script if you forget to assign it in the Inspector
             if (_playerVision == null)
                 _playerVision = playerObj.GetComponentInChildren<VisionConeMask>(); 
         }
@@ -85,7 +84,7 @@ public class EnemyMovement : MonoBehaviour
         // --- Instant Proximity Aggro Check ---
         float distanceToPlayer = float.MaxValue;
         bool isPlayerWithinPassiveRange = false;
-        bool isVisibleToPlayer = false; // NEW
+        bool isVisibleToPlayer = false; 
 
         if (_playerTransform != null)
         {
@@ -100,8 +99,8 @@ public class EnemyMovement : MonoBehaviour
             // 2. Check if player is within silent passive tracking distance
             isPlayerWithinPassiveRange = distanceToPlayer <= _passiveTrackingRange;
             
-            // NEW: 3. Check if enemy is currently inside the vision cone
-            if (_playerVision != null)
+            // 3. UPDATED: Check if enemy is inside the vision cone AND close enough to care
+            if (_playerVision != null && distanceToPlayer <= _maxVisionEvadeDistance)
             {
                 isVisibleToPlayer = _playerVision.IsPointVisible(transform.position);
             }
@@ -117,7 +116,7 @@ public class EnemyMovement : MonoBehaviour
         Vector2 movementTargetPosition = targetPos;
         bool wasAtCover = _isAtCover;
         _isAtCover = false; 
-        _isEvadingVision = false; // Reset evasion state every frame
+        _isEvadingVision = false; 
 
         bool soundIsWithinCurrentCover = false;
         if (hearingSound && _activeCover != null)
@@ -137,12 +136,12 @@ public class EnemyMovement : MonoBehaviour
             HandleAttackingMode();
             if (_playerTransform != null) movementTargetPosition = _playerTransform.position;
         }
-        else if (isVisibleToPlayer) // NEW: Evasion State (Highest priority outside of Attack Mode)
+        else if (isVisibleToPlayer) 
         {
             _isEvadingVision = true;
-            _activeCover = null;     // Break cover immediately
+            _activeCover = null;     
             _previousCover = null;
-            HandleEvasionMode();     // Steer perpendicular to the vision cone
+            HandleEvasionMode();     
         }
         else if (soundIsWithinCurrentCover)
         {
@@ -201,12 +200,10 @@ public class EnemyMovement : MonoBehaviour
         }
 
         // --- Unified Tracking Timer Resolution ---
-        // NEW: Being in the vision cone also increases the tracking timer (they aggro faster when looking right at them)
         bool shouldTrackPlayer = isHearingPlayerSound || isPlayerWithinPassiveRange || isVisibleToPlayer;
 
         if (!_inAttackMode && shouldTrackPlayer)
         {
-            // If they are actively visible to the player, double the aggro rate
             float aggroMultiplier = isVisibleToPlayer ? 2f : 1f;
             _trackingTimer += Time.fixedDeltaTime * aggroMultiplier;
             
@@ -221,8 +218,6 @@ public class EnemyMovement : MonoBehaviour
         }
 
         // --- Physics & Translation Execution ---
-        
-        // NEW: Do not use exponential targeting speed if we are running away (evading)
         if (!_inAttackMode && !_isEvadingVision) CalculateExponentialSpeed(movementTargetPosition);
         
         ResolveObstaclesAndAvoidJitter();
@@ -230,33 +225,35 @@ public class EnemyMovement : MonoBehaviour
         SetVelocity();
     }
 
-    // NEW: Method to calculate fleeing trajectory
     private void HandleEvasionMode()
     {
         if (_playerTransform == null) return;
 
-        // Force a specific fast speed while dodging the light
         _currentDynamicSpeed = _evasionSpeed;
 
         // Assuming your player's forward vision direction matches transform.up in 2D. 
-        // (Change this to _playerTransform.right if your player sprite faces along the X axis)
         Vector2 playerLookDirection = _playerTransform.up; 
-        Vector2 vectorToEnemy = ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized;
+        
+        // Get the direction pointing directly AWAY from the player
+        Vector2 vectorFromPlayerToEnemy = ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized;
 
         // Calculate the two vectors perpendicular to the player's line of sight
         Vector2 perpRight = new Vector2(-playerLookDirection.y, playerLookDirection.x);
         Vector2 perpLeft = new Vector2(playerLookDirection.y, -playerLookDirection.x);
 
-        // Dot product checks which side of the cone center-line the enemy is currently on.
-        // We pick the perpendicular direction that moves them *further* in that direction (fastest way out).
-        if (Vector2.Dot(perpRight, vectorToEnemy) > 0)
+        // Pick the perpendicular direction that gets them out of the cone fastest
+        Vector2 dodgeDirection;
+        if (Vector2.Dot(perpRight, vectorFromPlayerToEnemy) > 0)
         {
-            _desiredDirection = perpRight;
+            dodgeDirection = perpRight;
         }
         else
         {
-            _desiredDirection = perpLeft;
+            dodgeDirection = perpLeft;
         }
+
+        // Blend the sidestep dodge with the direction pointing away from the player.
+        _desiredDirection = (dodgeDirection + vectorFromPlayerToEnemy).normalized;
     }
 
     private void ResetCoverTimer()
@@ -503,6 +500,10 @@ public class EnemyMovement : MonoBehaviour
             
             Gizmos.color = Color.red;
             Gizmos.DrawWireSphere(_playerTransform.position, _minPlayerDistance);
+
+            // NEW: Draw the vision evasion cutoff radius around the player
+            Gizmos.color = Color.white;
+            Gizmos.DrawWireSphere(_playerTransform.position, _maxVisionEvadeDistance);
         }
 
         Gizmos.color = Color.magenta;
