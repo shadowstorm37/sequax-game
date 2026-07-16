@@ -243,13 +243,21 @@ public class EnemyMovement : MonoBehaviour
 
         // Pick the perpendicular direction that gets them out of the cone fastest
         Vector2 dodgeDirection;
-        if (Vector2.Dot(perpRight, vectorFromPlayerToEnemy) > 0)
+        float dotProduct = Vector2.Dot(perpRight, vectorFromPlayerToEnemy);
+        
+        // FIX: Added a small buffer (0.1f) so it doesn't violently vibrate between left and right
+        if (dotProduct > 0.1f)
         {
             dodgeDirection = perpRight;
         }
-        else
+        else if (dotProduct < -0.1f)
         {
             dodgeDirection = perpLeft;
+        }
+        else 
+        {
+            // Default to right if perfectly centered, preventing indecision spinning
+            dodgeDirection = perpRight; 
         }
 
         // Blend the sidestep dodge with the direction pointing away from the player.
@@ -454,18 +462,22 @@ public class EnemyMovement : MonoBehaviour
             }
         }
 
-        if (lookDirection == Vector2.zero) return;
+        // FIX: Prevent violent spinning when the direction vector is almost zero
+        if (lookDirection.sqrMagnitude < 0.01f) return;
         
         Quaternion targetRotation = Quaternion.LookRotation(Vector3.forward, lookDirection);
         _rigidbody.SetRotation(Quaternion.RotateTowards(transform.rotation, targetRotation, _rotationSpeed * Time.fixedDeltaTime));
+        
+        // FIX: Force angular velocity to zero so physics collisions don't spin the enemy
+        _rigidbody.angularVelocity = 0f; 
     }
 
     private void SetVelocity()
     {
-        if (_targetDirection == Vector2.zero || _targetDirection.sqrMagnitude < 0.01f)
+        // FIX: Increased deadzone slightly to stop movement jitter when reaching a target
+        if (_targetDirection == Vector2.zero || _targetDirection.sqrMagnitude < 0.05f)
         {
             _rigidbody.linearVelocity = Vector2.zero;
-            _rigidbody.angularVelocity = 0f;
         }
         else
         {
