@@ -45,6 +45,9 @@ public class PlayerScript : MonoBehaviour
     [SerializeField, Range(0f, 1f)] private float walkFootstepVolume = 0.25f;
     [SerializeField, Range(0f, 1f)] private float sprintFootstepVolume = 0.35f;
 
+    [Header("Creek Slowdown")]
+    [SerializeField, Range(0f, 1f)] private float creekSpeedMultiplier = 0.6f;
+
     public MovementState CurrentState { get; private set; } = MovementState.Idle;
     public Image staminaBar;
     public float Stamina { get; private set; }
@@ -57,6 +60,7 @@ public class PlayerScript : MonoBehaviour
     private float distanceSinceLastStep;
     private bool wantsToSprint;
     private bool wantsToCrouch;
+    private int creekZones;
 
     private void Awake()
     {
@@ -139,7 +143,8 @@ public class PlayerScript : MonoBehaviour
             _ => 0f
         };
 
-        rb.linearVelocity = moveInput * speed * GetDirectionalSpeedMultiplier();
+        float creekMultiplier = creekZones > 0 ? creekSpeedMultiplier : 1f;
+        rb.linearVelocity = moveInput * speed * GetDirectionalSpeedMultiplier() * creekMultiplier;
     }
 
     // Full speed moving into your own facing/vision direction, reduced speed moving
@@ -191,6 +196,22 @@ public class PlayerScript : MonoBehaviour
         {
             distanceSinceLastStep = 0f;
             EmitFootstepSound();
+        }
+    }
+
+    private void OnTriggerEnter2D(Collider2D other)
+    {
+        if (other.CompareTag("Water"))
+        {
+            creekZones++;
+        }
+    }
+
+    private void OnTriggerExit2D(Collider2D other)
+    {
+        if (other.CompareTag("Water"))
+        {
+            creekZones = Mathf.Max(0, creekZones - 1);
         }
     }
 
