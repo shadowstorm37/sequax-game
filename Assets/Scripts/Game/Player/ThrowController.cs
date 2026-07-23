@@ -24,9 +24,18 @@ public class ThrowController : MonoBehaviour
     [Tooltip("One ThrowableItemAudio per item, each with its own AudioSource/clip assigned in the Inspector.")]
     [SerializeField] private ThrowableItemAudio[] throwAudioSources;
 
-    [Header("Aim Indicator")]
-    [Tooltip("LineRenderer shown from the player to the landing point while aiming (right-click held).")]
-    [SerializeField] private LineRenderer aimLine;
+    [Header("Obstacle Blocking")]
+    [Tooltip("Same Obstacles layer the vision cone occludes against - throws are blocked by it too. " +
+             "Layers not in this mask (e.g. Default) never block a throw, so items can sail over them.")]
+    [SerializeField] private LayerMask obstacleLayerMask;
+
+    [Header("Clamped-Target Marker")]
+    [Tooltip("Only shown when the target had to be pulled in short of the cursor (max range or an obstacle). " +
+             "The cursor itself is the reticle otherwise - this just marks where the throw actually lands when it can't reach the cursor.")]
+    [SerializeField] private Transform clampedTargetMarker;
+    [SerializeField] private SpriteRenderer clampedTargetMarkerRenderer; // optional, for the clamp-reason color below
+    [SerializeField] private Color rangeClampedColor = Color.white;
+    [SerializeField] private Color obstacleClampedColor = Color.red;
 
     private static readonly KeyCode[] SlotKeys =
     {
@@ -38,8 +47,12 @@ public class ThrowController : MonoBehaviour
     private bool isAiming;
     private int selectedSlot;
 
+    /// <summary>True while the aim/throw button is held. Art/animation can poll this or subscribe to OnAimingChanged.</summary>
     public bool IsAiming => isAiming;
     public int SelectedSlot => selectedSlot;
+
+    /// <summary>Fired once when aiming starts and once when it ends (release, throw, or cancel). Hook animations/sprites here.</summary>
+    public event Action<bool> OnAimingChanged;
 
     private void Awake()
     {
@@ -51,22 +64,32 @@ public class ThrowController : MonoBehaviour
     private void Update()
     {
         UpdateSlotSelection();
-
-        if (Input.GetMouseButtonDown(1))
-        {
-            isAiming = true;
-        }
-        else if (Input.GetMouseButtonUp(1))
-        {
-            isAiming = false;
-        }
-
-        UpdateAimLine();
+        UpdateAimingState();
+        UpdateClampedTargetMarker();
 
         if (isAiming && Input.GetMouseButtonDown(0))
         {
             Throw();
         }
+    }
+
+    private void UpdateAimingState()
+    {
+        if (Input.GetMouseButtonDown(1))
+        {
+            SetAiming(true);
+        }
+        else if (Input.GetMouseButtonUp(1))
+        {
+            SetAiming(false);
+        }
+    }
+
+    private void SetAiming(bool value)
+    {
+        if (isAiming == value) return;
+        isAiming = value;
+        OnAimingChanged?.Invoke(isAiming);
     }
 
     private void UpdateSlotSelection()
@@ -91,24 +114,58 @@ public class ThrowController : MonoBehaviour
         }
     }
 
-    private void UpdateAimLine()
+    private void UpdateClampedTargetMarker()
     {
-        if (aimLine == null) return;
+        if (clampedTargetMarker == null) return;
 
-        aimLine.enabled = isAiming;
-        if (!isAiming) return;
+        if (!isAiming)
+        {
+            clampedTargetMarker.gameObject.SetActive(false);
+            return;
+        }
 
         Vector2 origin = transform.position;
-        Vector2 target = GetThrowTarget(origin);
-        aimLine.SetPosition(0, origin);
-        aimLine.SetPosition(1, target);
+        Vector2 target = GetThrowTarget(origin, out ClampReason reason);
+
+        clampedTargetMarker.gameObject.SetActive(reason != ClampReason.None);
+        if (reason == ClampReason.None) return;
+
+        clampedTargetMarker.position = target;
+        if (clampedTargetMarkerRenderer != null)
+        {
+            clampedTargetMarkerRenderer.color = reason == ClampReason.Obstacle ? obstacleClampedColor : rangeClampedColor;
+        }
     }
 
-    private Vector2 GetThrowTarget(Vector2 origin)
+    private enum ClampReason { None, Range, Obstacle }
+
+    /// <summary>
+    /// The cursor world position, range-clamped, then further clamped to the nearest
+    /// Obstacles-layer hit along that path. reason reports which clamp (if any) applied,
+    /// so callers only need to show a marker when the target actually differs from the cursor.
+    /// </summary>
+    private Vector2 GetThrowTarget(Vector2 origin, out ClampReason reason)
     {
-        // Clamp to the mouse distance so a close click lands short, not always at max range.
-        float distance = Mathf.Min(GetMouseDistance(origin), maxThrowRange);
-        return origin + playerScript.FacingDirection * distance;
+        reason = ClampReason.None;
+
+        Vector2 mouseWorldPos = GetMouseWorldPosition();
+        Vector2 toMouse = mouseWorldPos - origin;
+        float mouseDistance = toMouse.magnitude;
+
+        if (mouseDistance < 0.0001f) return origin;
+
+        Vector2 direction = toMouse / mouseDistance;
+        float rangeClampedDistance = Mathf.Min(mouseDistance, maxThrowRange);
+        if (rangeClampedDistance < mouseDistance) reason = ClampReason.Range;
+
+        RaycastHit2D hit = Physics2D.Raycast(origin, direction, rangeClampedDistance, obstacleLayerMask);
+        if (hit.collider != null)
+        {
+            reason = ClampReason.Obstacle;
+            return hit.point;
+        }
+
+        return origin + direction * rangeClampedDistance;
     }
 
     private void Throw()
@@ -118,10 +175,11 @@ public class ThrowController : MonoBehaviour
 
         ItemId itemId = slot.itemId;
         Vector2 origin = transform.position;
-        Vector2 target = GetThrowTarget(origin);
+        Vector2 target = GetThrowTarget(origin, out _);
 
         if (!inventory.RemoveFromSlot(selectedSlot)) return;
 
+        SetAiming(false);
         StartCoroutine(AnimateThrow(itemId, origin, target));
     }
 
@@ -178,14 +236,12 @@ public class ThrowController : MonoBehaviour
         return null;
     }
 
-    private float GetMouseDistance(Vector2 origin)
+    private Vector2 GetMouseWorldPosition()
     {
-        if (mainCamera == null) return maxThrowRange;
+        if (mainCamera == null) return transform.position;
 
         Vector3 mouseScreenPos = Input.mousePosition;
         mouseScreenPos.z = Mathf.Abs(mainCamera.transform.position.z - transform.position.z);
-        Vector2 mouseWorldPos = mainCamera.ScreenToWorldPoint(mouseScreenPos);
-
-        return Vector2.Distance(origin, mouseWorldPos);
+        return mainCamera.ScreenToWorldPoint(mouseScreenPos);
     }
 }
