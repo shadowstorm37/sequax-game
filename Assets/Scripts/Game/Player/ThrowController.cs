@@ -206,7 +206,14 @@ public class ThrowController : MonoBehaviour
             visual.transform.position = target;
         }
 
-        GetThrowAudio(itemId)?.Play();
+        ThrowableItemAudio throwAudio = GetThrowAudio(itemId);
+        if (throwAudio != null)
+        {
+            throwAudio.transform.SetParent(null, true);
+            throwAudio.transform.position = target;
+            throwAudio.Play();
+        }
+
         if (SoundManager.Instance != null)
         {
             SoundManager.Instance.EmitSound(target, throwLoudness, ItemDatabase.GetThrowSound(itemId), gameObject);
