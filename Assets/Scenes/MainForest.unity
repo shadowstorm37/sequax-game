@@ -360416,7 +360416,7 @@ MonoBehaviour:
   _maxSpeed: 5
   _speedExponent: 1.2
   _playerTag: Player
-  _timeToAttack: 40
+  _timeToAttack: 120
   _minPlayerDistance: 5
   _instantAttackDistance: 2.5
   _passiveTrackingRange: 7
