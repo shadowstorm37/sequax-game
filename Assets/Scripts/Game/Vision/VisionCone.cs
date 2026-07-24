@@ -49,6 +49,13 @@ public class VisionConeMask : MonoBehaviour
     [Header("Performance")]
     [Tooltip("Seconds between vision texture regenerations. Lower = more responsive to moving obstacles/facing, more expensive.")]
     [SerializeField] private float updateInterval = 0.1f;
+    [Tooltip("How far the player must move (world units) before the texture is worth rebuilding.")]
+    [SerializeField] private float rebuildMoveThreshold = 0.02f;
+    [Tooltip("How far the player must turn (degrees) before the texture is worth rebuilding.")]
+    [SerializeField] private float rebuildTurnThreshold = 0.5f;
+    [Tooltip("Rebuild at least this often even when the player is perfectly still, so an occluder " +
+             "that moves without telling us can't leave the texture stale forever.")]
+    [SerializeField] private float maxSecondsBetweenRebuilds = 0.5f;
 
     private static readonly int VisionTexId = Shader.PropertyToID("_VisionTex");
     private static readonly int VisionOriginId = Shader.PropertyToID("_VisionOrigin");
@@ -63,9 +70,23 @@ public class VisionConeMask : MonoBehaviour
     private Color32[] visionPixels;
     private float[] visibleDistances;
 
+    // A pixel's angle and distance from the texture centre are fixed by its coordinate - they are
+    // identical on every rebuild. Caching them turns the old per-pixel Atan2 and sqrt (65k of each,
+    // ten times a second) into two array reads. Angle is scale-invariant, and distance is stored in
+    // pixels and divided by pixelsPerUnit at use, so tweaking cone radius never invalidates these;
+    // only a resolution change does.
+    private float[] pixelAngles;
+    private float[] pixelDistances;
+    private int cachedTableResolution = -1;
+
     private float pixelsPerUnit;
     private float worldDiameter;
     private float updateTimer;
+
+    private Vector2 lastBakeOrigin;
+    private Vector2 lastBakeFacing;
+    private float secondsSinceRebuild;
+    private bool hasBaked;
 
     private void Awake()
     {
@@ -92,10 +113,29 @@ public class VisionConeMask : MonoBehaviour
         if (player == null) return;
 
         updateTimer += Time.deltaTime;
+        secondsSinceRebuild += Time.deltaTime;
         if (updateTimer < updateInterval) return;
-        updateTimer = 0f;
 
+        // Standing still and facing the same way produces a bit-identical texture, so skip the
+        // whole rebuild. Deliberately don't reset updateTimer here: it stays expired, so this
+        // cheap check runs every frame and the rebuild fires the instant the player does move,
+        // rather than waiting out another interval.
+        if (!ShouldRebuild()) return;
+
+        updateTimer = 0f;
         RegenerateVisionTexture();
+    }
+
+    private bool ShouldRebuild()
+    {
+        if (!hasBaked) return true;
+        if (secondsSinceRebuild >= maxSecondsBetweenRebuilds) return true;
+
+        Vector2 origin = transform.position;
+        if ((origin - lastBakeOrigin).sqrMagnitude > rebuildMoveThreshold * rebuildMoveThreshold) return true;
+
+        Vector2 facing = player != null ? player.FacingDirection : Vector2.up;
+        return Vector2.Angle(facing, lastBakeFacing) > rebuildTurnThreshold;
     }
 
     /// <summary>
@@ -139,6 +179,48 @@ public class VisionConeMask : MonoBehaviour
         {
             wrapMode = TextureWrapMode.Clamp
         };
+
+        BuildPixelTables();
+    }
+
+    // Built once per resolution. Costs one Atan2 and one sqrt per pixel here so the rebuild loop
+    // needs neither.
+    private void BuildPixelTables()
+    {
+        int res = textureResolution;
+        if (cachedTableResolution == res && pixelAngles != null) return;
+
+        pixelAngles = new float[res * res];
+        pixelDistances = new float[res * res];
+
+        float centerPixel = res / 2f;
+        for (int y = 0; y < res; y++)
+        {
+            for (int x = 0; x < res; x++)
+            {
+                float dx = x - centerPixel;
+                float dy = y - centerPixel;
+                int idx = y * res + x;
+
+                pixelDistances[idx] = Mathf.Sqrt(dx * dx + dy * dy);
+
+                float angle = Mathf.Atan2(dy, dx) * Mathf.Rad2Deg;
+                if (angle < 0f) angle += 360f;
+                pixelAngles[idx] = angle;
+            }
+        }
+
+        cachedTableResolution = res;
+    }
+
+    /// <summary>
+    /// Forces the next allowed rebuild to happen even if the player has not moved. Call this if
+    /// something other than the player changes what blocks vision - a door opening, an occluder
+    /// being enabled - since the movement check alone cannot see that.
+    /// </summary>
+    public void MarkDirty()
+    {
+        hasBaked = false;
     }
 
     // Recomputed every regeneration (not just once in Awake) so that tweaking Cone Radius /
@@ -167,11 +249,28 @@ public class VisionConeMask : MonoBehaviour
 
     private void RegenerateVisionTexture()
     {
+        // Resolution is only read when the buffers are built, so changing it in the Inspector at
+        // runtime would otherwise leave the loop indexing past the end of the old arrays.
+        if (visionPixels == null || visionPixels.Length != textureResolution * textureResolution)
+        {
+            if (visionTexture != null) Destroy(visionTexture);
+            InitializeTexture();
+        }
+
         UpdateWorldSizing();
 
         Vector2 origin = transform.position;
         Vector2 facing = player != null ? player.FacingDirection : Vector2.up;
         float facingAngleDeg = Mathf.Atan2(facing.y, facing.x) * Mathf.Rad2Deg;
+
+        // Ray count sets how finely obstacle edges are resolved, and is worth tuning against the
+        // texture resolution. Rebuilt here rather than only in Awake so it can be dialled in
+        // during Play Mode without the sampler indexing past the end of the old array.
+        if (visibleDistances == null || visibleDistances.Length != occlusionRayCount)
+        {
+            occlusionRayCount = Mathf.Max(occlusionRayCount, 8);
+            visibleDistances = new float[occlusionRayCount];
+        }
 
         float maxCastRadius = Mathf.Max(coneRadius, circleRadius);
         float rayStepDeg = 360f / occlusionRayCount;
@@ -195,31 +294,27 @@ public class VisionConeMask : MonoBehaviour
         }
 
         float halfConeAngleDeg = coneAngleDegrees * 0.5f;
-        float centerPixel = textureResolution / 2f;
 
-        for (int y = 0; y < textureResolution; y++)
+        // Flat single loop over the cached tables. Multiply by the reciprocal rather than dividing
+        // per pixel - at 65k pixels a rebuild the difference is worth having.
+        int pixelCount = textureResolution * textureResolution;
+        float invPixelsPerUnit = 1f / pixelsPerUnit;
+
+        for (int idx = 0; idx < pixelCount; idx++)
         {
-            for (int x = 0; x < textureResolution; x++)
-            {
-                Vector2 pixelOffset = new Vector2(x - centerPixel, y - centerPixel);
-                Vector2 worldOffset = pixelOffset / pixelsPerUnit;
-                float distWorld = worldOffset.magnitude;
+            float pixelAngleDeg = pixelAngles[idx];
+            float distWorld = pixelDistances[idx] * invPixelsPerUnit;
 
-                float pixelAngleDeg = Mathf.Atan2(worldOffset.y, worldOffset.x) * Mathf.Rad2Deg;
-                if (pixelAngleDeg < 0f) pixelAngleDeg += 360f;
+            float obstacleDist = SampleObstacleDistance(pixelAngleDeg, rayStepDeg);
+            float circleEffectiveRadius = Mathf.Min(circleRadius, obstacleDist);
+            float coneEffectiveRadius = Mathf.Min(coneRadius, obstacleDist);
+            float angleFromForwardDeg = Mathf.Abs(Mathf.DeltaAngle(pixelAngleDeg, facingAngleDeg));
 
-                float obstacleDist = SampleObstacleDistance(pixelAngleDeg, rayStepDeg);
-                float circleEffectiveRadius = Mathf.Min(circleRadius, obstacleDist);
-                float coneEffectiveRadius = Mathf.Min(coneRadius, obstacleDist);
-                float angleFromForwardDeg = Mathf.Abs(Mathf.DeltaAngle(pixelAngleDeg, facingAngleDeg));
+            float visibility = ComputeVisibility(
+                distWorld, angleFromForwardDeg, circleEffectiveRadius, coneEffectiveRadius,
+                halfConeAngleDeg, fadeWidth, fadeAngleDegrees);
 
-                float visibility = ComputeVisibility(
-                    distWorld, angleFromForwardDeg, circleEffectiveRadius, coneEffectiveRadius,
-                    halfConeAngleDeg, fadeWidth, fadeAngleDegrees);
-
-                int idx = y * textureResolution + x;
-                visionPixels[idx] = new Color32(255, 255, 255, (byte)(visibility * 255f));
-            }
+            visionPixels[idx] = new Color32(255, 255, 255, (byte)(visibility * 255f));
         }
 
         visionTexture.SetPixels32(visionPixels);
@@ -228,6 +323,11 @@ public class VisionConeMask : MonoBehaviour
         Shader.SetGlobalTexture(VisionTexId, visionTexture);
         Shader.SetGlobalVector(VisionOriginId, origin);
         Shader.SetGlobalFloat(VisionWorldDiameterId, worldDiameter);
+
+        lastBakeOrigin = origin;
+        lastBakeFacing = facing;
+        secondsSinceRebuild = 0f;
+        hasBaked = true;
     }
 
     // Combines a radius fade and an angle fade, multiplied together so a pixel only
