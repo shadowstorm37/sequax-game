@@ -1,23 +1,26 @@
 using UnityEngine;
+using UnityEngine.Serialization;
 
 namespace Game.Items
 {
     [RequireComponent(typeof(Collider2D))]
     public class ItemPickup : MonoBehaviour
     {
-        [SerializeField] private string itemName;
-        [SerializeField] private Inventory Inventory;
+        [SerializeField] private ItemId itemId;
+
+        [FormerlySerializedAs("Inventory")]
+        [SerializeField] private Inventory inventory;
 
         private void OnTriggerEnter2D(Collider2D other)
         {
-            if (Inventory == null)
+            if (inventory == null)
             {
-                Inventory = other.GetComponent<Inventory>();
+                inventory = other.GetComponent<Inventory>();
             }
 
-            if (Inventory == null || !other.CompareTag("Player")) return;
+            if (inventory == null || !other.CompareTag("Player")) return;
 
-            if (Inventory.AddItem(itemName))
+            if (inventory.AddItem(itemId))
             {
                 gameObject.SetActive(false);
             }
