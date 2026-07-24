@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.UI;
 using System.Collections.Generic;
+using TMPro;
 
 namespace Game.Items
 {
@@ -25,7 +26,7 @@ namespace Game.Items
         [Tooltip("Assign your 4 UI Images representing inventory hotbar slots.")]
         [SerializeField] private List<Image> slotIconImages = new List<Image>(Inventory.SlotCount);
         [Tooltip("Assign your 4 UI Text objects for stack counts.")]
-        [SerializeField] private List<Text> slotCountTexts = new List<Text>(Inventory.SlotCount);
+        [SerializeField] private List<TMP_Text> slotCountTexts = new List<TMP_Text>(Inventory.SlotCount);
         [Tooltip("Assign your 4 UI GameObjects/Borders that highlight when selected.")]
         [SerializeField] private List<GameObject> slotHighlights = new List<GameObject>(Inventory.SlotCount);
 
@@ -33,21 +34,39 @@ namespace Game.Items
         [Tooltip("The UI Image for the separate, dedicated active/held item slot.")]
         [SerializeField] private Image heldItemIconImage;
         [Tooltip("Optional Text for the held item's stack size.")]
-        [SerializeField] private Text heldItemCountText;
+        [SerializeField] private TMP_Text heldItemCountText;
         [Tooltip("Optional Text to display the item's clean name (e.g., 'Rock').")]
-        [SerializeField] private Text heldItemNameText;
+        [SerializeField] private TMP_Text heldItemNameText;
 
         private readonly Dictionary<ItemId, Sprite> iconMap = new Dictionary<ItemId, Sprite>();
         private int lastHighlightedSlot = -1;
 
         private void Awake()
         {
-            // Convert list mapping to a fast runtime dictionary lookup
-            foreach (var mapping in itemIcons)
+            // Explicitly reset and rebuild the lookup map fresh on game startup
+            iconMap.Clear();
+
+            if (itemIcons != null)
             {
-                if (!iconMap.ContainsKey(mapping.itemId))
+                for (int i = 0; i < itemIcons.Count; i++)
                 {
-                    iconMap.Add(mapping.itemId, mapping.itemSprite);
+                    var mapping = itemIcons[i];
+
+                    // Skip any unassigned entries or empty slots in the inspector list
+                    if (mapping.itemSprite == null)
+                    {
+                        Debug.LogWarning($"[Inventory UI Layout] Item ID '{mapping.itemId}' at index {i} has no Sprite assigned in the Inspector!");
+                        continue;
+                    }
+
+                    if (!iconMap.ContainsKey(mapping.itemId))
+                    {
+                        iconMap.Add(mapping.itemId, mapping.itemSprite);
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[Inventory UI Layout] Duplicate mapping found for Item ID '{mapping.itemId}'. Skipping duplicate entry.");
+                    }
                 }
             }
         }
@@ -70,6 +89,9 @@ namespace Game.Items
 
         private void Start()
         {
+            // Rebuild our runtime map one extra time just in case script initialization order shifts
+            Awake();
+
             // Fully render hotbar layouts on startup
             for (int i = 0; i < Inventory.SlotCount; i++)
             {
@@ -87,45 +109,71 @@ namespace Game.Items
         /// <summary>Updates individual slot icons/counts automatically whenever structural inventory changes.</summary>
         private void UpdateSlotVisuals(int slotIndex)
         {
-            if (slotIndex < 0 || slotIndex >= slotIconImages.Count || inventory == null) return;
+            if (inventory == null || slotIndex < 0 || slotIndex >= Inventory.SlotCount) return;
+
+            // Ensure our UI lists match up structurally
+            bool hasValidIconImage = slotIndex < slotIconImages.Count && slotIconImages[slotIndex] != null;
+            bool hasValidCountText = slotIndex < slotCountTexts.Count && slotCountTexts[slotIndex] != null;
 
             var slot = inventory.Slots[slotIndex];
 
-            // If slot data is null or completely depleted, clear the visuals
+            // Case A: The data slot is empty or invalid
             if (slot == null || slot.IsEmpty)
             {
-                slotIconImages[slotIndex].sprite = null;
-                slotIconImages[slotIndex].enabled = false;
-                if (slotIndex < slotCountTexts.Count && slotCountTexts[slotIndex] != null)
+                if (hasValidIconImage)
+                {
+                    slotIconImages[slotIndex].sprite = null;
+                    // Instead of disabling the component, let's keep it enabled but fully transparent 
+                    // This prevents canvas redraw bugs and layout dropouts
+                    var clr = slotIconImages[slotIndex].color;
+                    clr.a = 0f;
+                    slotIconImages[slotIndex].color = clr;
+                }
+
+                if (hasValidCountText)
                 {
                     slotCountTexts[slotIndex].text = "";
                 }
 
-                // Force an update to the held panel if our currently selected slot just emptied out
                 if (throwController != null && slotIndex == throwController.SelectedSlot)
                 {
-                    lastHighlightedSlot = -1; // Reset to force redraw
+                    lastHighlightedSlot = -1;
                 }
                 return;
             }
 
-            // Otherwise, read out matching item definitions
-            if (iconMap.TryGetValue(slot.itemId, out Sprite sprite))
+            // Case B: An item is sitting in this slot!
+            if (hasValidIconImage)
             {
-                slotIconImages[slotIndex].sprite = sprite;
-                slotIconImages[slotIndex].enabled = sprite != null;
+                if (iconMap.TryGetValue(slot.itemId, out Sprite sprite))
+                {
+                    slotIconImages[slotIndex].sprite = sprite;
+
+                    // Bring the visibility back to 100% alpha opacity
+                    var clr = slotIconImages[slotIndex].color;
+                    clr.a = sprite != null ? 1f : 0f;
+                    slotIconImages[slotIndex].color = clr;
+                }
+                else
+                {
+                    // LOUD DIAGNOSTIC CRASH WARNING
+                    Debug.LogError($"[Inventory UI Error] You picked up {slot.itemId}, but this item is completely missing from the 'Item Icons' configuration list on your InventoryUI component script in the Inspector!");
+
+                    slotIconImages[slotIndex].sprite = null;
+                    var clr = slotIconImages[slotIndex].color;
+                    clr.a = 0f;
+                    slotIconImages[slotIndex].color = clr;
+                }
             }
 
-            // Display item stack sizes if count > 1
-            if (slotIndex < slotCountTexts.Count && slotCountTexts[slotIndex] != null)
+            if (hasValidCountText)
             {
                 slotCountTexts[slotIndex].text = slot.count > 1 ? slot.count.ToString() : "";
             }
 
-            // Force an update to the held panel if our currently selected slot data changed
             if (throwController != null && slotIndex == throwController.SelectedSlot)
             {
-                lastHighlightedSlot = -1; // Reset to force redraw
+                lastHighlightedSlot = -1;
             }
         }
 
