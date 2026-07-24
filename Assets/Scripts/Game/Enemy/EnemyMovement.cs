@@ -5,9 +5,8 @@ public class EnemyMovement : MonoBehaviour
 {
     [SerializeField] private float _baseSpeed = 3f;
     [SerializeField] private float _maxSpeed = 15f;
-    [SerializeField] private float _speedExponent = 1.2f; 
-    [SerializeField] private float _rotationSpeed;
-    
+    [SerializeField] private float _speedExponent = 1.2f;
+
     [Header("Player Tracking / Aggro")]
     [SerializeField] private string _playerTag = "Player";
     [SerializeField] private float _timeToAttack = 10f; 
@@ -43,8 +42,7 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _attackTimer;     
     private bool _inAttackMode;
     private bool _isAtCover; 
-    private bool _isEvadingVision; 
-    private float _baseRotationSpeed;
+    private bool _isEvadingVision;
     private Rigidbody2D _rigidbody;
     private SoundAwareness _playerAwarenessController;
     
@@ -67,7 +65,6 @@ public class EnemyMovement : MonoBehaviour
         _rigidbody = GetComponent<Rigidbody2D>();
         _playerAwarenessController = GetComponent<SoundAwareness>();
         _obstacleCollisions = new RaycastHit2D[10];
-        _baseRotationSpeed = _rotationSpeed;
 
         GameObject playerObj = GameObject.FindWithTag(_playerTag);
         if (playerObj != null)
@@ -221,7 +218,7 @@ public class EnemyMovement : MonoBehaviour
         if (!_inAttackMode && !_isEvadingVision) CalculateExponentialSpeed(movementTargetPosition);
         
         ResolveObstaclesAndAvoidJitter();
-        RotateTowardsTarget();
+        KeepUpright();
         SetVelocity();
     }
 
@@ -371,7 +368,6 @@ public class EnemyMovement : MonoBehaviour
         Debug.Log("IN ATTACK MODE");
         _activeCover = null;
         _previousCover = null;
-        _rotationSpeed = _baseRotationSpeed * 2f; 
         _currentDynamicSpeed = _maxSpeed * 3f;
         _inAttackMode = true;
         _attackTimer = _attackModeDuration;
@@ -390,7 +386,6 @@ public class EnemyMovement : MonoBehaviour
             Debug.Log("NO LONGER IN ATTACK MODE");
             _attackTimer = 0f;
             _inAttackMode = false;
-            _rotationSpeed = _baseRotationSpeed; 
         }
     }
 
@@ -441,35 +436,15 @@ public class EnemyMovement : MonoBehaviour
         _targetDirection = Vector2.Lerp(_targetDirection, calculatedAvoidanceDir, _avoidanceSmoothing * Time.fixedDeltaTime);
     }
 
-    private void RotateTowardsTarget()
+    // The body deliberately never turns. Facing is drawn, not rotated: EnemyDirectionalSprite
+    // swaps to the pre-drawn art for the direction of travel, and that art is already angled for
+    // the top-down camera, so any real rotation would tilt it. Nothing else reads this rotation
+    // (the collider is a circle, and evasion reads the *player's* transform.up), so the body just
+    // stays upright and physics is kept from spinning it on collisions.
+    private void KeepUpright()
     {
-        Vector2 lookDirection = _targetDirection;
-
-        bool tooCloseToPlayerTracking = !_inAttackMode && 
-                                       _playerAwarenessController.IsHearingSound && 
-                                       (_playerAwarenessController.LastSoundSourceTag == _playerTag) &&
-                                       Vector2.Distance(transform.position, _playerAwarenessController.TargetSoundLocation) <= _minPlayerDistance;
-
-        if (_isAtCover || tooCloseToPlayerTracking)
-        {
-            if (_playerTransform != null)
-            {
-                lookDirection = ((Vector2)_playerTransform.position - (Vector2)transform.position).normalized;
-            }
-            else
-            {
-                lookDirection = _playerAwarenessController.DirectionToSound;
-            }
-        }
-
-        // FIX: Prevent violent spinning when the direction vector is almost zero
-        if (lookDirection.sqrMagnitude < 0.01f) return;
-        
-        Quaternion targetRotation = Quaternion.LookRotation(Vector3.forward, lookDirection);
-        _rigidbody.SetRotation(Quaternion.RotateTowards(transform.rotation, targetRotation, _rotationSpeed * Time.fixedDeltaTime));
-        
-        // FIX: Force angular velocity to zero so physics collisions don't spin the enemy
-        _rigidbody.angularVelocity = 0f; 
+        _rigidbody.SetRotation(0f);
+        _rigidbody.angularVelocity = 0f;
     }
 
     private void SetVelocity()
