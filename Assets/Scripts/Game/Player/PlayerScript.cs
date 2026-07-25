@@ -41,9 +41,17 @@ public class PlayerScript : MonoBehaviour
     [Header("Footstep Audio")]
     [SerializeField] private AudioSource footstepAudioSource;
     [SerializeField] private AudioClip grassFootstep;
+    [SerializeField] private AudioClip pavementFootstep;
+    [SerializeField] private AudioClip waterFootstep;
     [SerializeField, Range(0f, 1f)] private float crouchFootstepVolume = 0.15f;
     [SerializeField, Range(0f, 1f)] private float walkFootstepVolume = 0.25f;
     [SerializeField, Range(0f, 1f)] private float sprintFootstepVolume = 0.35f;
+    [SerializeField, Range(0.5f, 3f)] private float grassVolumeMultiplier = 1f;
+    [SerializeField, Range(0.5f, 3f)] private float pavementVolumeMultiplier = 1.5f;
+    [SerializeField, Range(0.5f, 3f)] private float waterVolumeMultiplier = 1f;
+    [SerializeField, Range(0.5f, 1.5f)] private float crouchPitch = 0.9f;
+    [SerializeField, Range(0.5f, 1.5f)] private float walkPitch = 1f;
+    [SerializeField, Range(0.5f, 1.5f)] private float sprintPitch = 1.1f;
 
     [Header("Creek Slowdown")]
     [SerializeField, Range(0f, 1f)] private float creekSpeedMultiplier = 0.6f;
@@ -61,6 +69,7 @@ public class PlayerScript : MonoBehaviour
     private bool wantsToSprint;
     private bool wantsToCrouch;
     private int creekZones;
+    private int pavementZones;
 
     private void Awake()
     {
@@ -205,6 +214,10 @@ public class PlayerScript : MonoBehaviour
         {
             creekZones++;
         }
+        else if (other.TryGetComponent(out PavementFootstep _))
+        {
+            pavementZones++;
+        }
     }
 
     private void OnTriggerExit2D(Collider2D other)
@@ -213,6 +226,16 @@ public class PlayerScript : MonoBehaviour
         {
             creekZones = Mathf.Max(0, creekZones - 1);
         }
+        else if (other.TryGetComponent(out PavementFootstep _))
+        {
+            pavementZones = Mathf.Max(0, pavementZones - 1);
+        }
+    }
+
+    private void OnDisable()
+    {
+        creekZones = 0;
+        pavementZones = 0;
     }
 
     private void OnCollisionEnter2D(Collision2D collision)
@@ -232,9 +255,28 @@ public class PlayerScript : MonoBehaviour
             _ => walkFootstepVolume
         };
 
-        if (footstepAudioSource != null && grassFootstep != null)
+        AudioClip clip = grassFootstep;
+        float surfaceMultiplier = grassVolumeMultiplier;
+        if (creekZones > 0 && waterFootstep != null)
         {
-            footstepAudioSource.PlayOneShot(grassFootstep, volume);
+            clip = waterFootstep;
+            surfaceMultiplier = waterVolumeMultiplier;
+        }
+        else if (pavementZones > 0 && pavementFootstep != null)
+        {
+            clip = pavementFootstep;
+            surfaceMultiplier = pavementVolumeMultiplier;
+        }
+
+        if (footstepAudioSource != null && clip != null)
+        {
+            footstepAudioSource.pitch = CurrentState switch
+            {
+                MovementState.Crouch => crouchPitch,
+                MovementState.Sprint => sprintPitch,
+                _ => walkPitch
+            };
+            footstepAudioSource.PlayOneShot(clip, volume * surfaceMultiplier);
         }
         if (SoundManager.Instance == null) return;
 
