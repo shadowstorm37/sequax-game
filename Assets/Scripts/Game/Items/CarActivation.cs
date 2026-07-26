@@ -1,41 +1,42 @@
 using UnityEngine;
-using UnityEngine.SceneManagement; // Required for switching scenes
+using UnityEngine.SceneManagement;
+using Game.Items;
 
 public class CarActivation : MonoBehaviour
 {
     [Header("Scene Settings")]
-    [Tooltip("The exact name of the scene you want to load when the car is activated.")]
     [SerializeField] private string sceneToLoad;
 
+    [Header("References")]
+    [SerializeField] private Inventory playerInventory;
+    [Tooltip("Assign the Car Requirements UI component script here.")]
+    [SerializeField] private CarRequirementsUI requirementsUI;
+
     [Header("UI Settings (Optional)")]
-    [Tooltip("An optional UI element (like a 'Press E' canvas) that turns on when the player is in range.")]
+    [Tooltip("The 'Press E to Escape' prompt graphic.")]
     [SerializeField] private GameObject interactionPrompt;
 
     private bool isPlayerInRange = false;
 
     private void Start()
     {
-        // Ensure the interaction prompt is hidden at the start of the game
-        if (interactionPrompt != null)
-        {
-            interactionPrompt.SetActive(false);
-        }
+        if (interactionPrompt != null) interactionPrompt.SetActive(false);
     }
 
     private void Update()
     {
-        // If the player is in the trigger zone and presses the 'E' key
-        if (isPlayerInRange && Input.GetKeyDown(KeyCode.E))
+        // Only allow extraction if the player is in range, presses E, and actually has the gear
+        if (isPlayerInRange && Input.GetKeyDown(KeyCode.E) && playerInventory != null && playerInventory.CanEscape)
         {
-            ActivateCar();
+            ExecuteEscape();
         }
     }
 
-    private void ActivateCar()
+    private void ExecuteEscape()
     {
         if (!string.IsNullOrEmpty(sceneToLoad))
         {
-            Debug.Log("Activating car... Loading scene: " + sceneToLoad);
+            Debug.Log("Escape successful! Activating car... Loading scene: " + sceneToLoad);
             SceneManager.LoadScene(sceneToLoad);
         }
         else
@@ -51,9 +52,19 @@ public class CarActivation : MonoBehaviour
         {
             isPlayerInRange = true;
 
-            if (interactionPrompt != null)
+            if (playerInventory != null)
             {
-                interactionPrompt.SetActive(true);
+                // ONLY show the "Press E" prompt if the player actually has the keys OR all 3 tools
+                if (interactionPrompt != null)
+                {
+                    interactionPrompt.SetActive(playerInventory.CanEscape);
+                }
+
+                // Always show the requirements item checklist overlay so they know what they need/have
+                if (requirementsUI != null)
+                {
+                    requirementsUI.ShowRequirements(playerInventory);
+                }
             }
         }
     }
@@ -65,10 +76,9 @@ public class CarActivation : MonoBehaviour
         {
             isPlayerInRange = false;
 
-            if (interactionPrompt != null)
-            {
-                interactionPrompt.SetActive(false);
-            }
+            // Safe to turn off both UI elements when they step away
+            if (interactionPrompt != null) interactionPrompt.SetActive(false);
+            if (requirementsUI != null) requirementsUI.HideRequirements();
         }
     }
 }
