@@ -11,6 +11,12 @@ namespace Game.Items
         [FormerlySerializedAs("Inventory")]
         [SerializeField] private Inventory inventory;
 
+        /// <summary>Sets which item this pickup grants. Used when spawning a pickup at runtime (e.g. a thrown phone left on the ground).</summary>
+        public void Initialize(ItemId id)
+        {
+            itemId = id;
+        }
+
         private void OnTriggerEnter2D(Collider2D other)
         {
             if (inventory == null)

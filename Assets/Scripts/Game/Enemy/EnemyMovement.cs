@@ -1,5 +1,6 @@
+using Game.Items;
 using UnityEngine;
-using UnityEngine.SceneManagement; 
+using UnityEngine.SceneManagement;
 
 public class EnemyMovement : MonoBehaviour
 {
@@ -15,9 +16,75 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _passiveTrackingRange = 5f;  
     
     [Header("Vision Evasion")]
-    [SerializeField] private VisionConeMask _playerVision; 
-    [SerializeField] private float _evasionSpeed = 8f;     
+    [SerializeField] private VisionConeMask _playerVision;
+    [SerializeField] private float _evasionSpeed = 8f;
     [SerializeField] private float _maxVisionEvadeDistance = 15f; // NEW: Enemy ignores vision cone beyond this distance
+
+    [Header("Evasion Follow-up")]
+    [Tooltip("Chance (0-1), once line of sight is broken, that the monster fully disengages instead of repositioning to flank.")]
+    [SerializeField, Range(0f, 1f)] private float _disengageChance = 0.4f;
+    [SerializeField] private float _disengageDurationMin = 2f;
+    [SerializeField] private float _disengageDurationMax = 4f;
+    [Tooltip("How far ahead of the player's facing direction the flank point is placed.")]
+    [SerializeField] private float _repositionForwardDistance = 7f;
+    [SerializeField] private float _repositionLateralOffset = 4f;
+    [Tooltip("Safety cutoff so a flank attempt can't wander forever if the point is unreachable.")]
+    [SerializeField] private float _repositionTimeout = 5f;
+
+    [Header("Charge (Bold Approach)")]
+    [Tooltip("Random cooldown range between charge attempts.")]
+    [SerializeField] private float _chargeCooldownMin = 10f;
+    [SerializeField] private float _chargeCooldownMax = 20f;
+    [SerializeField] private float _chargeSpeed = 11f;
+    [SerializeField] private float _chargeDuration = 3f;
+    [SerializeField] private float _chargeMinDistance = 4f;
+    [SerializeField] private float _chargeMaxDistance = 14f;
+    [Tooltip("How long he holds still and screams before actually bolting - a telegraph so a charge from off-screen/behind is still fair.")]
+    [SerializeField] private float _chargeWindupDuration = 0.6f;
+    [Tooltip("Seconds of sustained tracking pressure needed to count as 'angry' at the start of a run: a charge that gets spotted no longer aborts (commits to attack instead), and contact from behind becomes lethal. Deliberately independent of Time To Attack so the two can be tuned separately.")]
+    [SerializeField] private float _angryTrackingSecondsBaseline = 80f;
+
+    [Header("Lost Tracking Patrol")]
+    [Tooltip("How long he lingers and searches the last-known area before fully giving up.")]
+    [SerializeField] private float _patrolDurationMin = 4f;
+    [SerializeField] private float _patrolDurationMax = 8f;
+    [Tooltip("How far from the last-known point each wander waypoint can land.")]
+    [SerializeField] private float _patrolRadius = 4f;
+    [SerializeField] private float _patrolWaypointIntervalMin = 1.5f;
+    [SerializeField] private float _patrolWaypointIntervalMax = 3f;
+    [SerializeField] private float _patrolStoppingDistance = 0.3f;
+
+    [Header("Fallback (Catch-Up)")]
+    [Tooltip("Once patrolling gives up without re-finding the player, he stops hiding and beelines back toward their current position instead of idling forever - prevents indefinitely outrunning him in a straight line.")]
+    [SerializeField] private float _fallbackSpeed = 10f;
+    [Tooltip("How far from the player's live position he aims to land - kept outside easy immediate contact so a cross-map catch-up isn't a cheap ambush.")]
+    [SerializeField] private float _fallbackLandingDistance = 9f;
+    [SerializeField] private float _fallbackStoppingDistance = 1f;
+    [Tooltip("Safety cutoff so a fallback run can't chase forever if the player keeps moving unpredictably.")]
+    [SerializeField] private float _fallbackTimeout = 15f;
+    [Tooltip("Distant cue played the instant Fallback triggers - losing him for too long shouldn't mean an unfair silent return.")]
+    [SerializeField] private AudioClip _fallbackClip;
+
+    [Header("Escalation")]
+    [Tooltip("Seconds of effective elapsed time - accelerated by key items collected - to go from baseline to fully escalated.")]
+    [SerializeField] private float _escalationRampSeconds = 300f;
+    [Tooltip("Extra rate added to the escalation clock per key item collected. 0.5 means each item speeds it up by 50%.")]
+    [SerializeField] private float _escalationPerItemBonus = 0.5f;
+    [Tooltip("Charge cooldown range once fully escalated - keeps a floor above zero so charges are frequent late-game, never nonstop.")]
+    [SerializeField] private float _escalatedChargeCooldownMin = 4f;
+    [SerializeField] private float _escalatedChargeCooldownMax = 8f;
+    [Tooltip("Seconds of sustained tracking pressure needed to count as 'angry' once fully escalated - kept above zero so it's never instant, just faster to reach. You still need to be able to make it back to the car.")]
+    [SerializeField] private float _angryTrackingSecondsEscalated = 25f;
+
+    [Header("Audio")]
+    [SerializeField] private AudioSource _audioSource;
+    [Tooltip("Played the instant a charge begins, before the windup ends and he actually moves.")]
+    [SerializeField] private AudioClip _chargeScreamClip;
+    [Tooltip("Played once, the instant he crosses the angry threshold - the player's cue that blind-spot contact is now lethal.")]
+    [SerializeField] private AudioClip _angryClip;
+    [Tooltip("Played the instant attack mode is entered, from any trigger.")]
+    [SerializeField] private AudioClip _attackWarningClip;
+    [SerializeField, Range(0f, 1f)] private float _audioVolume = 1f;
 
     [Header("Hiding / Cover")]
     [SerializeField] private float _coverSearchRadius = 6f; 
@@ -37,31 +104,75 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _trackingAreaRadius = 1.5f;
     [SerializeField] private float _attackModeDuration = 7f;
 
+    private enum EvasionPhase { None, BreakingLineOfSight, Reposition, Disengaged }
+
     private float _currentDynamicSpeed;
-    [SerializeField] private float _trackingTimer;   
-    [SerializeField] private float _attackTimer;     
+    [SerializeField] private float _trackingTimer;
+    [SerializeField] private float _attackTimer;
     private bool _inAttackMode;
-    private bool _isAtCover; 
-    private bool _isEvadingVision;
+    private bool _isAtCover;
     private Rigidbody2D _rigidbody;
+
+    private EvasionPhase _evasionPhase;
+    private Vector2 _evasionDestination;
+    private float _disengageTimer;
+    private float _repositionTimer;
+
+    private bool _isCharging;
+    private bool _inChargeWindup;
+    private float _chargeWindupTimer;
+    private float _chargeTimer;
+    private float _chargeCooldownTimer;
+    private bool _wasAngry;
+    private bool _lastVisibleToPlayer;
+
+    private bool _isPatrolling;
+    private float _patrolTimer;
+    private float _patrolWaypointTimer;
+    private Vector2 _patrolDestination;
+    private Vector2 _lastKnownPlayerPosition;
+    private bool _hasLastKnownPlayerPosition;
+
+    private bool _isFallingBack;
+    private float _fallbackTimer;
+    private Vector2 _fallbackApproachOffset;
+    private Vector2 _fallbackDestination;
+
+    private float _elapsedRunTime;
+    private float _escalationProgress;
+    private Inventory _playerInventory;
+
     private SoundAwareness _playerAwarenessController;
-    
-    private Vector2 _desiredDirection; 
-    private Vector2 _targetDirection;  
+
+    private Vector2 _desiredDirection;
+    private Vector2 _targetDirection;
     private RaycastHit2D[] _obstacleCollisions;
-    
-    private Transform _playerTransform; 
+
+    private Transform _playerTransform;
     private Collider2D _activeCover;
     private Collider2D _previousCover;
     private float _coverSwitchTimer;
+
+    // "Really angry": once the tracking meter crosses this many seconds of sustained pressure, a
+    // spotted charge commits to attack instead of fleeing, and contact from behind (outside the
+    // player's vision) turns lethal. Kept as an absolute value rather than a fraction of Time To
+    // Attack so the two can be tuned independently - Time To Attack can be set arbitrarily high
+    // without dragging the anger threshold up with it.
+    private float CurrentAngryTrackingSeconds => Mathf.Lerp(_angryTrackingSecondsBaseline, _angryTrackingSecondsEscalated, _escalationProgress);
+    private bool IsAngry => _trackingTimer >= CurrentAngryTrackingSeconds;
+
+    private float CurrentChargeCooldownMin => Mathf.Lerp(_chargeCooldownMin, _escalatedChargeCooldownMin, _escalationProgress);
+    private float CurrentChargeCooldownMax => Mathf.Lerp(_chargeCooldownMax, _escalatedChargeCooldownMax, _escalationProgress);
 
     private void Awake()
     {
         _inAttackMode = false;
         _isAtCover = false;
-        _isEvadingVision = false;
         _trackingTimer = 0f;
         _attackTimer = 0f;
+        _elapsedRunTime = 0f;
+        _escalationProgress = 0f;
+        _chargeCooldownTimer = Random.Range(_chargeCooldownMin, _chargeCooldownMax);
         _rigidbody = GetComponent<Rigidbody2D>();
         _playerAwarenessController = GetComponent<SoundAwareness>();
         _obstacleCollisions = new RaycastHit2D[10];
@@ -70,7 +181,8 @@ public class EnemyMovement : MonoBehaviour
         if (playerObj != null)
         {
             _playerTransform = playerObj.transform;
-            
+            _playerInventory = playerObj.GetComponent<Inventory>();
+
             if (_playerVision == null)
                 _playerVision = playerObj.GetComponentInChildren<VisionConeMask>(); 
         }
@@ -78,6 +190,8 @@ public class EnemyMovement : MonoBehaviour
 
     private void FixedUpdate()
     {
+        UpdateEscalation();
+
         // --- Instant Proximity Aggro Check ---
         float distanceToPlayer = float.MaxValue;
         bool isPlayerWithinPassiveRange = false;
@@ -103,6 +217,8 @@ public class EnemyMovement : MonoBehaviour
             }
         }
 
+        _lastVisibleToPlayer = isVisibleToPlayer;
+
         bool hearingSound = _playerAwarenessController.IsHearingSound;
         Vector2 targetPos = _playerAwarenessController.TargetSoundLocation;
         float targetLoudness = _playerAwarenessController.TargetSoundLoudness;
@@ -110,10 +226,15 @@ public class EnemyMovement : MonoBehaviour
         string soundTag = hearingSound ? _playerAwarenessController.LastSoundSourceTag : "";
         bool isHearingPlayerSound = soundTag == _playerTag;
 
+        if (isHearingPlayerSound)
+        {
+            _lastKnownPlayerPosition = targetPos;
+            _hasLastKnownPlayerPosition = true;
+        }
+
         Vector2 movementTargetPosition = targetPos;
         bool wasAtCover = _isAtCover;
-        _isAtCover = false; 
-        _isEvadingVision = false; 
+        _isAtCover = false;
 
         bool soundIsWithinCurrentCover = false;
         if (hearingSound && _activeCover != null)
@@ -125,75 +246,121 @@ public class EnemyMovement : MonoBehaviour
             }
         }
 
+        bool knowsPlayerLocation = isHearingPlayerSound || isPlayerWithinPassiveRange;
+
+        // --- Charge Trigger ---
+        // Only winds up while calmly tracking (hidden, not already evading/charging) so a charge
+        // always starts as a surprise rather than interrupting a moment the player already reacted to.
+        if (!_inAttackMode && !_isCharging && _evasionPhase == EvasionPhase.None && !isVisibleToPlayer)
+        {
+            _chargeCooldownTimer -= Time.fixedDeltaTime;
+            if (_chargeCooldownTimer <= 0f && knowsPlayerLocation &&
+                distanceToPlayer >= _chargeMinDistance && distanceToPlayer <= _chargeMaxDistance)
+            {
+                StartCharge();
+            }
+        }
+
         // --- Movement & State Resolution ---
         if (_inAttackMode)
         {
-            _activeCover = null; 
+            _isPatrolling = false;
+            _isFallingBack = false;
+            _activeCover = null;
             _previousCover = null;
             HandleAttackingMode();
             if (_playerTransform != null) movementTargetPosition = _playerTransform.position;
         }
-        else if (isVisibleToPlayer) 
+        else if (_isCharging)
         {
-            _isEvadingVision = true;
-            _activeCover = null;     
-            _previousCover = null;
-            HandleEvasionMode();     
+            _isPatrolling = false;
+            _isFallingBack = false;
+            Vector2 chargeTarget = _playerTransform != null && (isVisibleToPlayer || isPlayerWithinPassiveRange || isHearingPlayerSound)
+                ? (Vector2)_playerTransform.position
+                : targetPos;
+            HandleCharge(chargeTarget, isVisibleToPlayer);
+            movementTargetPosition = chargeTarget;
         }
-        else if (soundIsWithinCurrentCover)
+        else
         {
-            _desiredDirection = Vector2.zero;
-            _isAtCover = wasAtCover; 
-            UpdateCoverTimer(targetPos);
-        }
-        else if (hearingSound) 
-        {
-            if (isHearingPlayerSound)
+            if (isVisibleToPlayer && _evasionPhase == EvasionPhase.None)
             {
-                if (TryFindCoverSpot(targetPos, out Vector2 hidePosition, _previousCover))
-                {
-                    movementTargetPosition = hidePosition;
-                    HandleMoveToPosition(hidePosition, _hideStoppingDistance);
+                BeginEvasion();
+            }
 
-                    if (Vector2.Distance(transform.position, hidePosition) <= _hideStoppingDistance)
-                    {
-                        if (!wasAtCover) ResetCoverTimer();
-                        _isAtCover = true;
-                    }
-                }
-                else if (_previousCover != null && TryFindCoverSpot(targetPos, out hidePosition, null))
+            if (_evasionPhase != EvasionPhase.None)
+            {
+                _isPatrolling = false;
+                _isFallingBack = false;
+                HandleEvasionStateMachine(isVisibleToPlayer);
+                movementTargetPosition = _evasionDestination;
+            }
+            else if (soundIsWithinCurrentCover)
+            {
+                _isPatrolling = false;
+                _isFallingBack = false;
+                _desiredDirection = Vector2.zero;
+                _isAtCover = wasAtCover;
+                UpdateCoverTimer(targetPos);
+            }
+            else if (hearingSound)
+            {
+                _isPatrolling = false;
+                _isFallingBack = false;
+                if (isHearingPlayerSound)
                 {
-                    movementTargetPosition = hidePosition;
-                    HandleMoveToPosition(hidePosition, _hideStoppingDistance);
-
-                    if (Vector2.Distance(transform.position, hidePosition) <= _hideStoppingDistance)
+                    if (TryFindCoverSpot(targetPos, out Vector2 hidePosition, _previousCover))
                     {
-                        if (!wasAtCover) ResetCoverTimer();
-                        _isAtCover = true;
+                        movementTargetPosition = hidePosition;
+                        HandleMoveToPosition(hidePosition, _hideStoppingDistance);
+
+                        if (Vector2.Distance(transform.position, hidePosition) <= _hideStoppingDistance)
+                        {
+                            if (!wasAtCover) ResetCoverTimer();
+                            _isAtCover = true;
+                        }
                     }
+                    else if (_previousCover != null && TryFindCoverSpot(targetPos, out hidePosition, null))
+                    {
+                        movementTargetPosition = hidePosition;
+                        HandleMoveToPosition(hidePosition, _hideStoppingDistance);
+
+                        if (Vector2.Distance(transform.position, hidePosition) <= _hideStoppingDistance)
+                        {
+                            if (!wasAtCover) ResetCoverTimer();
+                            _isAtCover = true;
+                        }
+                    }
+                    else
+                    {
+                        _activeCover = null;
+                        _previousCover = null;
+                        movementTargetPosition = targetPos;
+                        HandleTrackMode(targetPos, targetLoudness, isHearingPlayerSound);
+                    }
+
+                    if (_isAtCover) UpdateCoverTimer(targetPos);
                 }
                 else
                 {
                     _activeCover = null;
                     _previousCover = null;
                     movementTargetPosition = targetPos;
-                    HandleTrackMode(targetPos, targetLoudness, isHearingPlayerSound);
+                    HandleTrackMode(targetPos, targetLoudness, false);
                 }
-
-                if (_isAtCover) UpdateCoverTimer(targetPos);
+            }
+            else if (_isFallingBack)
+            {
+                _previousCover = null;
+                HandleFallback();
+                movementTargetPosition = _fallbackDestination;
             }
             else
             {
-                _activeCover = null;
                 _previousCover = null;
-                movementTargetPosition = targetPos;
-                HandleTrackMode(targetPos, targetLoudness, false);
+                HandlePatrol();
+                movementTargetPosition = _patrolDestination;
             }
-        }
-        else
-        {
-            _desiredDirection = Vector2.zero;
-            _previousCover = null; 
         }
 
         // --- Unified Tracking Timer Resolution ---
@@ -203,7 +370,7 @@ public class EnemyMovement : MonoBehaviour
         {
             float aggroMultiplier = isVisibleToPlayer ? 2f : 1f;
             _trackingTimer += Time.fixedDeltaTime * aggroMultiplier;
-            
+
             if (_trackingTimer >= _timeToAttack)
             {
                 EnterAttackMode();
@@ -214,51 +381,307 @@ public class EnemyMovement : MonoBehaviour
             _trackingTimer = Mathf.Max(0f, _trackingTimer - Time.fixedDeltaTime / 20f);
         }
 
+        bool isAngryNow = IsAngry;
+        if (isAngryNow && !_wasAngry)
+        {
+            PlaySound(_angryClip);
+        }
+        _wasAngry = isAngryNow;
+
         // --- Physics & Translation Execution ---
-        if (!_inAttackMode && !_isEvadingVision) CalculateExponentialSpeed(movementTargetPosition);
-        
+        bool speedHandledElsewhere = _inAttackMode || _isCharging || _evasionPhase != EvasionPhase.None || _isPatrolling || _isFallingBack;
+        if (!speedHandledElsewhere) CalculateExponentialSpeed(movementTargetPosition);
+
         ResolveObstaclesAndAvoidJitter();
         KeepUpright();
         SetVelocity();
     }
 
-    private void HandleEvasionMode()
+    // Elapsed run time is the baseline driver; each key item collected speeds up the effective
+    // clock, so escalation still happens on a slow/exploring run but accelerates as the player
+    // gets closer to escaping. Progress is clamped to 1, so nothing scales past its floor value -
+    // the run is always survivable, just tighter over time.
+    private void UpdateEscalation()
+    {
+        int itemsCollected = _playerInventory != null ? _playerInventory.KeyItems.Count : 0;
+        _elapsedRunTime += Time.fixedDeltaTime * (1f + itemsCollected * _escalationPerItemBonus);
+        _escalationProgress = _escalationRampSeconds > 0f ? Mathf.Clamp01(_elapsedRunTime / _escalationRampSeconds) : 1f;
+    }
+
+    private void StartCharge()
+    {
+        _isCharging = true;
+        _inChargeWindup = true;
+        _chargeWindupTimer = _chargeWindupDuration;
+        _chargeTimer = _chargeDuration;
+        PlaySound(_chargeScreamClip);
+    }
+
+    private void EndCharge()
+    {
+        _isCharging = false;
+        _inChargeWindup = false;
+        _chargeCooldownTimer = Random.Range(CurrentChargeCooldownMin, CurrentChargeCooldownMax);
+    }
+
+    private void HandleCharge(Vector2 chargeTarget, bool isVisibleToPlayer)
+    {
+        if (_inChargeWindup)
+        {
+            // Holds still to scream - EnemyDirectionalSprite's idle behavior already turns him to
+            // stare at the player while stationary, so this reads as roaring at them before bolting.
+            _currentDynamicSpeed = 0f;
+            _desiredDirection = Vector2.zero;
+            _chargeWindupTimer -= Time.fixedDeltaTime;
+
+            if (isVisibleToPlayer)
+            {
+                ResolveChargeInterruption();
+                return;
+            }
+
+            if (_chargeWindupTimer <= 0f)
+            {
+                _inChargeWindup = false;
+            }
+            return;
+        }
+
+        _currentDynamicSpeed = _chargeSpeed;
+        HandleMoveToPosition(chargeTarget, _instantAttackDistance);
+        _chargeTimer -= Time.fixedDeltaTime;
+
+        if (isVisibleToPlayer)
+        {
+            ResolveChargeInterruption();
+            return;
+        }
+
+        if (_chargeTimer <= 0f)
+        {
+            EndCharge();
+        }
+    }
+
+    // Being spotted mid-charge (windup or sprint) either scares him off or, if he's already angry
+    // enough, commits straight into a real attack instead of backing down.
+    private void ResolveChargeInterruption()
+    {
+        bool isAngry = IsAngry;
+        EndCharge();
+
+        if (isAngry)
+        {
+            EnterAttackMode();
+        }
+        else
+        {
+            BeginEvasion();
+        }
+    }
+
+    // Once the sound trail goes cold, he doesn't just freeze - he lingers and wanders randomly
+    // around the last place he heard the player for a short while before fully giving up. Getting
+    // heard or seen again cancels this immediately (the movement resolution above clears
+    // _isPatrolling in every other branch), so it's purely filler between real signals.
+    private void HandlePatrol()
+    {
+        if (!_hasLastKnownPlayerPosition)
+        {
+            _isPatrolling = false;
+            _desiredDirection = Vector2.zero;
+            return;
+        }
+
+        if (!_isPatrolling)
+        {
+            _isPatrolling = true;
+            _patrolTimer = Random.Range(_patrolDurationMin, _patrolDurationMax);
+            PickNewPatrolWaypoint();
+        }
+
+        _currentDynamicSpeed = _baseSpeed;
+        _patrolTimer -= Time.fixedDeltaTime;
+        _patrolWaypointTimer -= Time.fixedDeltaTime;
+
+        if (_patrolWaypointTimer <= 0f || Vector2.Distance(transform.position, _patrolDestination) <= _patrolStoppingDistance)
+        {
+            PickNewPatrolWaypoint();
+        }
+
+        HandleMoveToPosition(_patrolDestination, _patrolStoppingDistance);
+
+        if (_patrolTimer <= 0f)
+        {
+            _isPatrolling = false;
+            _hasLastKnownPlayerPosition = false;
+            StartFallback();
+        }
+    }
+
+    private void PickNewPatrolWaypoint()
+    {
+        Vector2 offset = Random.insideUnitCircle * _patrolRadius;
+        _patrolDestination = _lastKnownPlayerPosition + offset;
+        _patrolWaypointTimer = Random.Range(_patrolWaypointIntervalMin, _patrolWaypointIntervalMax);
+    }
+
+    // Prevents indefinitely outrunning him: once the trail's gone cold long enough that patrolling
+    // gave up, he stops searching and beelines back toward the player's live position instead of
+    // idling forever. Resets the tracking meter so he comes back at a fair, fresh baseline rather
+    // than already primed to attack the instant he arrives.
+    private void StartFallback()
     {
         if (_playerTransform == null) return;
 
-        _currentDynamicSpeed = _evasionSpeed;
+        _isFallingBack = true;
+        _fallbackTimer = _fallbackTimeout;
+        _fallbackApproachOffset = Random.insideUnitCircle.normalized * _fallbackLandingDistance;
+        _trackingTimer = 0f;
+        _wasAngry = false;
+        PlaySound(_fallbackClip);
+    }
 
-        // Assuming your player's forward vision direction matches transform.up in 2D. 
-        Vector2 playerLookDirection = _playerTransform.up; 
-        
-        // Get the direction pointing directly AWAY from the player
-        Vector2 vectorFromPlayerToEnemy = ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized;
-
-        // Calculate the two vectors perpendicular to the player's line of sight
-        Vector2 perpRight = new Vector2(-playerLookDirection.y, playerLookDirection.x);
-        Vector2 perpLeft = new Vector2(playerLookDirection.y, -playerLookDirection.x);
-
-        // Pick the perpendicular direction that gets them out of the cone fastest
-        Vector2 dodgeDirection;
-        float dotProduct = Vector2.Dot(perpRight, vectorFromPlayerToEnemy);
-        
-        // FIX: Added a small buffer (0.1f) so it doesn't violently vibrate between left and right
-        if (dotProduct > 0.1f)
+    private void HandleFallback()
+    {
+        if (_playerTransform == null)
         {
-            dodgeDirection = perpRight;
-        }
-        else if (dotProduct < -0.1f)
-        {
-            dodgeDirection = perpLeft;
-        }
-        else 
-        {
-            // Default to right if perfectly centered, preventing indecision spinning
-            dodgeDirection = perpRight; 
+            _isFallingBack = false;
+            _desiredDirection = Vector2.zero;
+            return;
         }
 
-        // Blend the sidestep dodge with the direction pointing away from the player.
-        _desiredDirection = (dodgeDirection + vectorFromPlayerToEnemy).normalized;
+        _currentDynamicSpeed = _fallbackSpeed;
+        _fallbackTimer -= Time.fixedDeltaTime;
+
+        _fallbackDestination = (Vector2)_playerTransform.position + _fallbackApproachOffset;
+        HandleMoveToPosition(_fallbackDestination, _fallbackStoppingDistance);
+
+        bool arrived = Vector2.Distance(transform.position, _fallbackDestination) <= _fallbackStoppingDistance;
+        if (arrived || _fallbackTimer <= 0f)
+        {
+            _isFallingBack = false;
+        }
+    }
+
+    private void PlaySound(AudioClip clip)
+    {
+        if (_audioSource != null && clip != null)
+        {
+            _audioSource.PlayOneShot(clip, _audioVolume);
+        }
+    }
+
+    private void BeginEvasion()
+    {
+        _evasionPhase = EvasionPhase.BreakingLineOfSight;
+        _activeCover = null;
+    }
+
+    private void EndEvasion()
+    {
+        _evasionPhase = EvasionPhase.None;
+        _activeCover = null;
+    }
+
+    // Runs the post-spotted flow: duck out of sight first, then either go quiet for a beat or
+    // swing around to a point ahead of the player, so the monster reads as reacting to being seen
+    // rather than just sidestepping back into view a moment later.
+    private void HandleEvasionStateMachine(bool isVisibleToPlayer)
+    {
+        switch (_evasionPhase)
+        {
+            case EvasionPhase.BreakingLineOfSight:
+                _currentDynamicSpeed = _evasionSpeed;
+
+                bool foundCover = _playerTransform != null &&
+                    (TryFindCoverSpot(_playerTransform.position, out _evasionDestination, _previousCover) ||
+                     (_previousCover != null && TryFindCoverSpot(_playerTransform.position, out _evasionDestination, null)));
+
+                if (!foundCover)
+                {
+                    // No cover nearby - fall back to just putting distance behind it.
+                    Vector2 away = _playerTransform != null
+                        ? ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized
+                        : -_desiredDirection;
+                    _evasionDestination = (Vector2)transform.position + away * 5f;
+                }
+
+                HandleMoveToPosition(_evasionDestination, _hideStoppingDistance);
+
+                if (!isVisibleToPlayer)
+                {
+                    _previousCover = _activeCover;
+                    TransitionToNextEvasionPhase();
+                }
+                break;
+
+            case EvasionPhase.Reposition:
+                _currentDynamicSpeed = _evasionSpeed;
+                _repositionTimer -= Time.fixedDeltaTime;
+                HandleMoveToPosition(_evasionDestination, _hideStoppingDistance);
+
+                if (isVisibleToPlayer)
+                {
+                    _evasionPhase = EvasionPhase.BreakingLineOfSight;
+                }
+                else if (Vector2.Distance(transform.position, _evasionDestination) <= _hideStoppingDistance ||
+                         _repositionTimer <= 0f)
+                {
+                    EndEvasion();
+                }
+                break;
+
+            case EvasionPhase.Disengaged:
+                _currentDynamicSpeed = _baseSpeed;
+                _disengageTimer -= Time.fixedDeltaTime;
+
+                if (_playerTransform != null)
+                {
+                    float distanceNow = Vector2.Distance(transform.position, _playerTransform.position);
+                    Vector2 away = ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized;
+                    _evasionDestination = (Vector2)transform.position + away;
+                    _desiredDirection = distanceNow < _passiveTrackingRange * 2f ? away : Vector2.zero;
+                }
+
+                if (isVisibleToPlayer)
+                {
+                    _evasionPhase = EvasionPhase.BreakingLineOfSight;
+                }
+                else if (_disengageTimer <= 0f)
+                {
+                    EndEvasion();
+                }
+                break;
+        }
+    }
+
+    private void TransitionToNextEvasionPhase()
+    {
+        if (Random.value < _disengageChance)
+        {
+            _evasionPhase = EvasionPhase.Disengaged;
+            _disengageTimer = Random.Range(_disengageDurationMin, _disengageDurationMax);
+        }
+        else
+        {
+            _evasionPhase = EvasionPhase.Reposition;
+            _evasionDestination = ComputeFlankPosition();
+            _repositionTimer = _repositionTimeout;
+        }
+    }
+
+    // Aims for a point ahead of the player's current facing so the monster approaches from a new
+    // angle instead of trailing behind - "coming from the front" rather than following like a puppy.
+    private Vector2 ComputeFlankPosition()
+    {
+        if (_playerTransform == null) return transform.position;
+
+        Vector2 playerPos = _playerTransform.position;
+        Vector2 forward = _playerTransform.up;
+        Vector2 lateral = new Vector2(-forward.y, forward.x) * (Random.value < 0.5f ? 1f : -1f);
+
+        return playerPos + forward * _repositionForwardDistance + lateral * _repositionLateralOffset;
     }
 
     private void ResetCoverTimer()
@@ -366,6 +789,7 @@ public class EnemyMovement : MonoBehaviour
     private void EnterAttackMode()
     {
         Debug.Log("IN ATTACK MODE");
+        PlaySound(_attackWarningClip);
         _activeCover = null;
         _previousCover = null;
         _currentDynamicSpeed = _maxSpeed * 3f;
@@ -472,7 +896,14 @@ public class EnemyMovement : MonoBehaviour
 
     private void CheckPlayerTouch(GameObject targetObject)
     {
-        if (targetObject.CompareTag(_playerTag))
+        if (!targetObject.CompareTag(_playerTag)) return;
+
+        // A calm, unseen bump from behind isn't a fair kill - the player had no way to know it was
+        // coming. Contact only kills if he's already committed to attacking, angry enough that
+        // blind-spot contact is expected to be lethal (telegraphed by the angry sound), or the
+        // player could actually see him at the moment of contact.
+        bool canKill = _inAttackMode || IsAngry || _lastVisibleToPlayer;
+        if (canKill)
         {
             SceneManager.LoadScene("GameOver");
         }
