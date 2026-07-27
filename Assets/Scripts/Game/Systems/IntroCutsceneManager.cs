@@ -16,6 +16,12 @@ public class IntroCutsceneManager : MonoBehaviour
     [SerializeField] private Image backgroundImage;      // Controls the background rendering
     [SerializeField] private CanvasGroup bgAlphaGroup;    // Optional: Controls smooth background cross-fades
 
+    [Header("Audio Settings")]
+    [SerializeField] private AudioSource audioSource;    // Reference to the AudioSource component
+    [SerializeField] private AudioClip typingSound;      // The pixel/blip sound effect asset
+    [Range(0f, 1f)]
+    [SerializeField] private float volume = 0.5f;        // Easy volume control
+
     [Header("Narrative Settings")]
     [TextArea(3, 5)]
     [SerializeField] private string[] storyBeats;
@@ -41,6 +47,12 @@ public class IntroCutsceneManager : MonoBehaviour
             return;
         }
 
+        // Auto-grab AudioSource if left unassigned
+        if (audioSource == null)
+        {
+            audioSource = GetComponent<AudioSource>();
+        }
+
         StartCoroutine(PlayIntroSequence());
     }
 
@@ -58,6 +70,12 @@ public class IntroCutsceneManager : MonoBehaviour
         {
             isTextFullyDisplayed = false;
             currentFullText = storyBeats[currentBeatIndex];
+
+            // Explicitly clear the text component string immediately so it never leaks
+            if (narrativeText != null)
+            {
+                narrativeText.text = string.Empty;
+            }
 
             // Swap the background graphic *while* it's hidden or fading in
             if (backgroundImage != null && backgroundSprites[currentBeatIndex] != null)
@@ -95,6 +113,14 @@ public class IntroCutsceneManager : MonoBehaviour
         foreach (char letter in textToType.ToCharArray())
         {
             narrativeText.text += letter;
+
+            // Play the sound effect using PlayOneShot whenever a character is typed,
+            // but skip spaces so it sounds more like natural speaking/typing cadence.
+            if (letter != ' ' && audioSource != null && typingSound != null)
+            {
+                audioSource.PlayOneShot(typingSound, volume);
+            }
+
             yield return new WaitForSeconds(typingSpeed);
         }
     }

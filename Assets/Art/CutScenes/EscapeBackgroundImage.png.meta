@@ -1,10 +1,10 @@
 fileFormatVersion: 2
-guid: 4930f07174b76e844810d8092757c9f1
+guid: 5e969f2f04fb47545aad77fd787bc4d0
 TextureImporter:
   internalIDToNameTable:
   - first:
-      213: -1980087205728113518
-    second: EscapedBackground_0
+      213: 722462924653861076
+    second: EscapeBackgroundImage_0
   externalObjects: {}
   serializedVersion: 13
   mipmaps:
@@ -100,13 +100,13 @@ TextureImporter:
     serializedVersion: 2
     sprites:
     - serializedVersion: 2
-      name: EscapedBackground_0
+      name: EscapeBackgroundImage_0
       rect:
         serializedVersion: 2
         x: 0
         y: 0
-        width: 1408
-        height: 768
+        width: 1380
+        height: 752
       alignment: 0
       pivot: {x: 0, y: 0}
       border: {x: 0, y: 0, z: 0, w: 0}
@@ -115,8 +115,8 @@ TextureImporter:
       physicsShape: []
       tessellationDetail: -1
       bones: []
-      spriteID: 29ca7466d215584e0800000000000000
-      internalID: -1980087205728113518
+      spriteID: 4d81263c334b60a00800000000000000
+      internalID: 722462924653861076
       vertices: []
       indices: 
       edges: []
@@ -135,7 +135,7 @@ TextureImporter:
     spriteCustomMetadata:
       entries: []
     nameFileIdTable:
-      EscapedBackground_0: -1980087205728113518
+      EscapeBackgroundImage_0: 722462924653861076
   mipmapLimitGroupName: 
   pSDRemoveMatte: 0
   userData: 
