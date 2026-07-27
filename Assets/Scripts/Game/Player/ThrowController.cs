@@ -17,6 +17,7 @@ public class ThrowController : MonoBehaviour
     [SerializeField] private float maxThrowRange = 8f;
     [SerializeField] private float throwLoudness = 8f;
     [SerializeField] private float throwSpeed = 12f; // world units/sec the visual travels at
+    [SerializeField] private float throwRotationSpeed = 540f; // degrees/sec the visual spins while airborne
     [SerializeField] private float lingerAfterLanding = 0.2f; // time the sprite stays visible once it lands, before despawning
     [SerializeField] private ThrowVisual[] throwVisuals;
 
@@ -197,6 +198,7 @@ public class ThrowController : MonoBehaviour
             if (visual != null)
             {
                 visual.transform.position = Vector2.Lerp(origin, target, elapsed / duration);
+                visual.transform.Rotate(0f, 0f, throwRotationSpeed * Time.deltaTime);
             }
             yield return null;
         }
@@ -221,8 +223,32 @@ public class ThrowController : MonoBehaviour
 
         if (visual != null)
         {
-            Destroy(visual, lingerAfterLanding);
+            if (itemId == ItemId.Phone)
+            {
+                SetupPhonePickup(visual);
+            }
+            else
+            {
+                Destroy(visual, lingerAfterLanding);
+            }
         }
+    }
+
+    /// <summary>Leaves the thrown phone on the ground as a re-collectible pickup instead of despawning it.</summary>
+    private void SetupPhonePickup(GameObject visual)
+    {
+        if (visual.GetComponent<Collider2D>() == null)
+        {
+            CircleCollider2D collider = visual.AddComponent<CircleCollider2D>();
+            collider.isTrigger = true;
+        }
+
+        ItemPickup pickup = visual.GetComponent<ItemPickup>();
+        if (pickup == null)
+        {
+            pickup = visual.AddComponent<ItemPickup>();
+        }
+        pickup.Initialize(ItemId.Phone);
     }
 
     private GameObject GetVisualPrefab(ItemId itemId)
