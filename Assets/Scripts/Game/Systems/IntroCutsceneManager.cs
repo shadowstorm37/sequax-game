@@ -20,7 +20,7 @@ public class IntroCutsceneManager : MonoBehaviour
     [SerializeField] private AudioSource audioSource;    // Reference to the AudioSource component
     [SerializeField] private AudioClip typingSound;      // The pixel/blip sound effect asset
     [Range(0f, 1f)]
-    [SerializeField] private float volume = 0.5f;        // Easy volume control
+    [SerializeField] private float volume = 0.1f;        // Easy volume control
 
     [Header("Narrative Settings")]
     [TextArea(3, 5)]
@@ -29,7 +29,7 @@ public class IntroCutsceneManager : MonoBehaviour
     [Tooltip("Assign a background sprite for each story beat. The list size MUST match the Story Beats size!")]
     [SerializeField] private Sprite[] backgroundSprites;
 
-    [SerializeField] private float typingSpeed = 0.04f;
+    [SerializeField] private float typingSpeed = 0.1f;
     [SerializeField] private float delayBetweenBeats = 3.5f; // Raised slightly so they can take in the art!
 
     private int currentBeatIndex = 0;
@@ -118,10 +118,18 @@ public class IntroCutsceneManager : MonoBehaviour
             // but skip spaces so it sounds more like natural speaking/typing cadence.
             if (letter != ' ' && audioSource != null && typingSound != null)
             {
+                // Slightly randomize the pitch for each distinct keystroke to sound organic
+                audioSource.pitch = Random.Range(0.95f, 1.05f);
                 audioSource.PlayOneShot(typingSound, volume);
             }
 
             yield return new WaitForSeconds(typingSpeed);
+        }
+
+        // Reset pitch back to normal once typing for this beat concludes
+        if (audioSource != null)
+        {
+            audioSource.pitch = 1.0f;
         }
     }
 
@@ -132,10 +140,23 @@ public class IntroCutsceneManager : MonoBehaviour
             StopCoroutine(typingCoroutine);
             narrativeText.text = currentFullText;
             isTextFullyDisplayed = true;
+
+            // Make sure pitch resets if the player abruptly forces text skip
+            if (audioSource != null)
+            {
+                audioSource.pitch = 1.0f;
+            }
         }
         else
         {
             StopAllCoroutines();
+
+            // Clean up pitch state on a full scene bypass/skip
+            if (audioSource != null)
+            {
+                audioSource.pitch = 1.0f;
+            }
+
             StartCoroutine(SkipToNextBeat());
         }
     }
