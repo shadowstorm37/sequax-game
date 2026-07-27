@@ -261,9 +261,9 @@ MonoBehaviour:
 
     I''m too tired to do anything else, I''m going to sleep...'
   backgroundSprites:
-  - {fileID: -3134031045652835464, guid: bb42aa3125ffe9845b8adcfb55e7a7c7, type: 3}
-  - {fileID: -4398240114371472824, guid: b1eab1786cf862741aa6beb4c3f2cdbc, type: 3}
-  - {fileID: -7798129673215274286, guid: 4f3c0e71d6d686549bbd07234fbd4048, type: 3}
+  - {fileID: -5535503189541752817, guid: 7b296ca4284c9e84693654e982a79bd2, type: 3}
+  - {fileID: 6414535848321160473, guid: aa1abc532c112304b8951e85c1e14f1f, type: 3}
+  - {fileID: 5872294019788502827, guid: 9ebfcbec66a12ad4480ca1e45c2f86a7, type: 3}
   typingSpeed: 0.1
   delayBetweenBeats: 3.5
 --- !u!82 &585796377
@@ -744,8 +744,8 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -182, y: 9.4773}
-  m_SizeDelta: {x: 364, y: 343.0453}
+  m_AnchoredPosition: {x: -182, y: -0.0000076293945}
+  m_SizeDelta: {x: 364, y: 267.2224}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!222 &1303360473
 CanvasRenderer:
