@@ -56,6 +56,9 @@ public class PlayerScript : MonoBehaviour
     [Header("Creek Slowdown")]
     [SerializeField, Range(0f, 1f)] private float creekSpeedMultiplier = 0.6f;
 
+    [Header("Bush Slowdown")]
+    [SerializeField, Range(0f, 1f)] private float bushSpeedMultiplier = 0.5f;
+
     public MovementState CurrentState { get; private set; } = MovementState.Idle;
     public Image staminaBar;
     public float Stamina { get; private set; }
@@ -70,6 +73,7 @@ public class PlayerScript : MonoBehaviour
     private bool wantsToCrouch;
     private int creekZones;
     private int pavementZones;
+    private int bushZones;
 
     private void Awake()
     {
@@ -152,8 +156,16 @@ public class PlayerScript : MonoBehaviour
             _ => 0f
         };
 
-        float creekMultiplier = creekZones > 0 ? creekSpeedMultiplier : 1f;
-        rb.linearVelocity = moveInput * speed * GetDirectionalSpeedMultiplier() * creekMultiplier;
+        // Environmental slowdowns don't stack multiplicatively; the strongest
+        // (lowest) active multiplier wins, so a creek+bush overlap can't crawl
+        // the player to a near-stop.
+        float environmentalMultiplier = 1f;
+        if (creekZones > 0)
+            environmentalMultiplier = Mathf.Min(environmentalMultiplier, creekSpeedMultiplier);
+        if (bushZones > 0)
+            environmentalMultiplier = Mathf.Min(environmentalMultiplier, bushSpeedMultiplier);
+
+        rb.linearVelocity = moveInput * speed * GetDirectionalSpeedMultiplier() * environmentalMultiplier;
     }
 
     // Full speed moving into your own facing/vision direction, reduced speed moving
@@ -218,6 +230,10 @@ public class PlayerScript : MonoBehaviour
         {
             pavementZones++;
         }
+        else if (other.TryGetComponent(out BushSlowZone _))
+        {
+            bushZones++;
+        }
     }
 
     private void OnTriggerExit2D(Collider2D other)
@@ -230,12 +246,17 @@ public class PlayerScript : MonoBehaviour
         {
             pavementZones = Mathf.Max(0, pavementZones - 1);
         }
+        else if (other.TryGetComponent(out BushSlowZone _))
+        {
+            bushZones = Mathf.Max(0, bushZones - 1);
+        }
     }
 
     private void OnDisable()
     {
         creekZones = 0;
         pavementZones = 0;
+        bushZones = 0;
     }
 
     private void OnCollisionEnter2D(Collision2D collision)
