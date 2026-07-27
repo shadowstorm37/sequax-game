@@ -12,13 +12,19 @@ public class IntroCutsceneManager : MonoBehaviour
 
     [Header("UI Elements")]
     [SerializeField] private TextMeshProUGUI narrativeText;
-    [SerializeField] private CanvasGroup UIAlphaGroup; // Used to cleanly fade text in/out
+    [SerializeField] private CanvasGroup textAlphaGroup; // Controls text fade
+    [SerializeField] private Image backgroundImage;      // Controls the background rendering
+    [SerializeField] private CanvasGroup bgAlphaGroup;    // Optional: Controls smooth background cross-fades
 
     [Header("Narrative Settings")]
     [TextArea(3, 5)]
     [SerializeField] private string[] storyBeats;
+
+    [Tooltip("Assign a background sprite for each story beat. The list size MUST match the Story Beats size!")]
+    [SerializeField] private Sprite[] backgroundSprites;
+
     [SerializeField] private float typingSpeed = 0.04f;
-    [SerializeField] private float delayBetweenBeats = 2.5f;
+    [SerializeField] private float delayBetweenBeats = 3.5f; // Raised slightly so they can take in the art!
 
     private int currentBeatIndex = 0;
     private bool isTextFullyDisplayed = false;
@@ -27,20 +33,19 @@ public class IntroCutsceneManager : MonoBehaviour
 
     private void Start()
     {
-        if (storyBeats == null || storyBeats.Length == 0)
+        // Checks to ensure arrays match perfectly
+        if (storyBeats == null || backgroundSprites == null || storyBeats.Length != backgroundSprites.Length)
         {
-            Debug.LogError("Intro Cutscene error: No story beats assigned in the inspector!");
+            Debug.LogError("Intro Cutscene Error: The number of Story Beats and Background Sprites must match exactly!");
             AdvanceToGameplay();
             return;
         }
 
-        // Start the story sequence
         StartCoroutine(PlayIntroSequence());
     }
 
     private void Update()
     {
-        // Allow the player to skip or advance text by pressing Space or Left Click
         if (Input.GetKeyDown(KeyCode.Space) || Input.GetMouseButtonDown(0))
         {
             HandlePlayerInput();
@@ -54,8 +59,15 @@ public class IntroCutsceneManager : MonoBehaviour
             isTextFullyDisplayed = false;
             currentFullText = storyBeats[currentBeatIndex];
 
-            // Fade UI in gently
-            yield return StartCoroutine(FadeUI(0f, 1f, 0.5f));
+            // Swap the background graphic *while* it's hidden or fading in
+            if (backgroundImage != null && backgroundSprites[currentBeatIndex] != null)
+            {
+                backgroundImage.sprite = backgroundSprites[currentBeatIndex];
+            }
+
+            // Fade both background and text in smoothly
+            StartCoroutine(FadeCanvas(bgAlphaGroup, bgAlphaGroup.alpha, 1f, 0.75f));
+            yield return StartCoroutine(FadeCanvas(textAlphaGroup, 0f, 1f, 0.5f));
 
             // Type out the text character by character
             typingCoroutine = StartCoroutine(TypeText(currentFullText));
@@ -63,16 +75,17 @@ public class IntroCutsceneManager : MonoBehaviour
 
             isTextFullyDisplayed = true;
 
-            // Wait for the player to read it before automatically moving to the next beat
+            // Wait for player reading time
             yield return new WaitForSeconds(delayBetweenBeats);
 
-            // Fade UI out gently before switching lines
-            yield return StartCoroutine(FadeUI(1f, 0f, 0.5f));
+            // Fade out text (and optionally background if transitioning to a drastically different scene)
+            yield return StartCoroutine(FadeCanvas(textAlphaGroup, 1f, 0f, 0.5f));
 
             currentBeatIndex++;
         }
 
-        // All story beats finished, load the game!
+        // Final fade out of everything before entering the nightmarish reality
+        yield return StartCoroutine(FadeCanvas(bgAlphaGroup, 1f, 0f, 1.0f));
         AdvanceToGameplay();
     }
 
@@ -82,7 +95,6 @@ public class IntroCutsceneManager : MonoBehaviour
         foreach (char letter in textToType.ToCharArray())
         {
             narrativeText.text += letter;
-            // Optional trigger a tiny audio click sound effect
             yield return new WaitForSeconds(typingSpeed);
         }
     }
@@ -91,14 +103,12 @@ public class IntroCutsceneManager : MonoBehaviour
     {
         if (!isTextFullyDisplayed)
         {
-            // If text is still typing, stop the typewriter effect and immediately show the full sentence
             StopCoroutine(typingCoroutine);
             narrativeText.text = currentFullText;
             isTextFullyDisplayed = true;
         }
         else
         {
-            // If the sentence was already fully showing, skip the remaining wait delay and jump to the next line
             StopAllCoroutines();
             StartCoroutine(SkipToNextBeat());
         }
@@ -106,7 +116,8 @@ public class IntroCutsceneManager : MonoBehaviour
 
     private IEnumerator SkipToNextBeat()
     {
-        yield return StartCoroutine(FadeUI(UIAlphaGroup.alpha, 0f, 0.2f));
+        // Fast fade text out to keep pacing snappy on manual skips
+        yield return StartCoroutine(FadeCanvas(textAlphaGroup, textAlphaGroup.alpha, 0f, 0.2f));
         currentBeatIndex++;
 
         if (currentBeatIndex < storyBeats.Length)
@@ -115,22 +126,23 @@ public class IntroCutsceneManager : MonoBehaviour
         }
         else
         {
+            yield return StartCoroutine(FadeCanvas(bgAlphaGroup, bgAlphaGroup.alpha, 0f, 0.5f));
             AdvanceToGameplay();
         }
     }
 
-    private IEnumerator FadeUI(float startAlpha, float endAlpha, float duration)
+    private IEnumerator FadeCanvas(CanvasGroup group, float startAlpha, float endAlpha, float duration)
     {
-        if (UIAlphaGroup == null) yield break;
+        if (group == null) yield break;
 
         float elapsed = 0f;
         while (elapsed < duration)
         {
             elapsed += Time.deltaTime;
-            UIAlphaGroup.alpha = Mathf.Lerp(startAlpha, endAlpha, elapsed / duration);
+            group.alpha = Mathf.Lerp(startAlpha, endAlpha, elapsed / duration);
             yield return null;
         }
-        UIAlphaGroup.alpha = endAlpha;
+        group.alpha = endAlpha;
     }
 
     private void AdvanceToGameplay()
@@ -138,10 +150,6 @@ public class IntroCutsceneManager : MonoBehaviour
         if (!string.IsNullOrEmpty(gameplaySceneName))
         {
             SceneManager.LoadScene(gameplaySceneName);
-        }
-        else
-        {
-            Debug.LogError("Intro Scene Error: Gameplay Scene Name is empty!");
         }
     }
 }
