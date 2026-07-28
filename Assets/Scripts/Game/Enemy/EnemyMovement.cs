@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Game.Items;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -104,6 +105,16 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _trackingAreaRadius = 1.5f;
     [SerializeField] private float _attackModeDuration = 7f;
 
+    [Header("Distraction Fatigue")]
+    [Tooltip("How many times a distraction sound type (per item) can be used at full strength before he starts tuning it out.")]
+    [SerializeField] private int _fatigueThreshold = 2;
+    [Tooltip("Additional uses after the threshold before the response bottoms out at its floor below.")]
+    [SerializeField] private int _fatigueDecaySteps = 4;
+    [Tooltip("Rocks never fully stop working - once fatigued they still make him flinch and hesitate for a beat instead of a real investigation.")]
+    [SerializeField, Range(0f, 1f)] private float _rockFatigueFloor = 0.15f;
+    [Tooltip("Non-rock distractions fatigue all the way to zero - completely ignored, no reaction at all, once worn out.")]
+    [SerializeField, Range(0f, 1f)] private float _otherFatigueFloor = 0f;
+
     private enum EvasionPhase { None, BreakingLineOfSight, Reposition, Disengaged }
 
     private float _currentDynamicSpeed;
@@ -143,6 +154,7 @@ public class EnemyMovement : MonoBehaviour
     private Inventory _playerInventory;
 
     private SoundAwareness _playerAwarenessController;
+    private readonly Dictionary<SoundType, int> _distractionUseCounts = new();
 
     private Vector2 _desiredDirection;
     private Vector2 _targetDirection;
@@ -177,6 +189,11 @@ public class EnemyMovement : MonoBehaviour
         _playerAwarenessController = GetComponent<SoundAwareness>();
         _obstacleCollisions = new RaycastHit2D[10];
 
+        if (_playerAwarenessController != null)
+        {
+            _playerAwarenessController.OnSoundHeard += HandleDistractionSoundHeard;
+        }
+
         GameObject playerObj = GameObject.FindWithTag(_playerTag);
         if (playerObj != null)
         {
@@ -186,6 +203,49 @@ public class EnemyMovement : MonoBehaviour
             if (_playerVision == null)
                 _playerVision = playerObj.GetComponentInChildren<VisionConeMask>(); 
         }
+    }
+
+    private void OnDestroy()
+    {
+        if (_playerAwarenessController != null)
+        {
+            _playerAwarenessController.OnSoundHeard -= HandleDistractionSoundHeard;
+        }
+    }
+
+    private static bool IsDistractionSound(SoundType type) =>
+        type == SoundType.ThrowImpact || type == SoundType.GlassBreak || type == SoundType.Phone || type == SoundType.Radio;
+
+    private float GetFatigueFloor(SoundType type) => type == SoundType.ThrowImpact ? _rockFatigueFloor : _otherFatigueFloor;
+
+    // 1.0 while under the fatigue threshold (fresh/rarely-used sound), then lerps down to the
+    // type's floor over _fatigueDecaySteps further uses. Rocks have a floor above zero so they
+    // never fully stop registering; everything else can decay all the way to being ignored.
+    private float GetInvestigateStrength(SoundType type)
+    {
+        int count = _distractionUseCounts.TryGetValue(type, out int c) ? c : 0;
+        if (count <= _fatigueThreshold) return 1f;
+
+        float floor = GetFatigueFloor(type);
+        float t = _fatigueDecaySteps > 0 ? Mathf.Clamp01((float)(count - _fatigueThreshold) / _fatigueDecaySteps) : 1f;
+        return Mathf.Lerp(1f, floor, t);
+    }
+
+    private void HandleDistractionSoundHeard(SoundEvent soundEvent)
+    {
+        if (!IsDistractionSound(soundEvent.type)) return;
+
+        _distractionUseCounts.TryGetValue(soundEvent.type, out int count);
+        _distractionUseCounts[soundEvent.type] = count + 1;
+    }
+
+    // A distraction that's completely worn out still makes him flinch toward the noise for a beat
+    // instead of committing to a full investigation - reads as "heard that, not fooled again"
+    // rather than a full ignore. Only reachable for types with a floor above zero (rocks).
+    private void HandleHesitation()
+    {
+        _currentDynamicSpeed = 0f;
+        _desiredDirection = Vector2.zero;
     }
 
     private void FixedUpdate()
@@ -226,7 +286,24 @@ public class EnemyMovement : MonoBehaviour
         string soundTag = hearingSound ? _playerAwarenessController.LastSoundSourceTag : "";
         bool isHearingPlayerSound = soundTag == _playerTag;
 
-        if (isHearingPlayerSound)
+        // --- Distraction Fatigue ---
+        // Thrown items share the player's tag (they're emitted with the player as source), so the
+        // only way to tell a worn-out distraction apart from a real footstep is the sound TYPE.
+        SoundType dominantSoundType = _playerAwarenessController.TargetSoundType;
+        bool isDistractionSound = hearingSound && IsDistractionSound(dominantSoundType);
+        float distractionStrength = isDistractionSound ? GetInvestigateStrength(dominantSoundType) : 1f;
+        // Fresh/rarely-used distraction: worth breaking cover for, so it's allowed to override the
+        // vision-cone-avoidance instinct below - otherwise the player throws a rock, the monster
+        // dodges into a bush to avoid being seen, and there's no way to tell the distraction landed.
+        bool distractionAtFullStrength = isDistractionSound && distractionStrength >= 1f;
+        bool distractionBottomedOut = isDistractionSound && distractionStrength <= GetFatigueFloor(dominantSoundType) + 0.001f;
+        bool distractionFullyIgnored = distractionBottomedOut && GetFatigueFloor(dominantSoundType) <= 0f;
+        bool distractionHesitateOnly = distractionBottomedOut && !distractionFullyIgnored;
+
+        bool isHearingPlayerSoundEffective = isHearingPlayerSound && !distractionBottomedOut;
+        bool effectiveHearingSound = hearingSound && !distractionFullyIgnored;
+
+        if (isHearingPlayerSoundEffective)
         {
             _lastKnownPlayerPosition = targetPos;
             _hasLastKnownPlayerPosition = true;
@@ -246,7 +323,7 @@ public class EnemyMovement : MonoBehaviour
             }
         }
 
-        bool knowsPlayerLocation = isHearingPlayerSound || isPlayerWithinPassiveRange;
+        bool knowsPlayerLocation = isHearingPlayerSoundEffective || isPlayerWithinPassiveRange;
 
         // --- Charge Trigger ---
         // Only winds up while calmly tracking (hidden, not already evading/charging) so a charge
@@ -283,7 +360,7 @@ public class EnemyMovement : MonoBehaviour
         }
         else
         {
-            if (isVisibleToPlayer && _evasionPhase == EvasionPhase.None)
+            if (isVisibleToPlayer && _evasionPhase == EvasionPhase.None && !distractionAtFullStrength)
             {
                 BeginEvasion();
             }
@@ -295,6 +372,13 @@ public class EnemyMovement : MonoBehaviour
                 HandleEvasionStateMachine(isVisibleToPlayer);
                 movementTargetPosition = _evasionDestination;
             }
+            else if (distractionHesitateOnly)
+            {
+                _isPatrolling = false;
+                _isFallingBack = false;
+                HandleHesitation();
+                movementTargetPosition = transform.position;
+            }
             else if (soundIsWithinCurrentCover)
             {
                 _isPatrolling = false;
@@ -303,11 +387,11 @@ public class EnemyMovement : MonoBehaviour
                 _isAtCover = wasAtCover;
                 UpdateCoverTimer(targetPos);
             }
-            else if (hearingSound)
+            else if (effectiveHearingSound)
             {
                 _isPatrolling = false;
                 _isFallingBack = false;
-                if (isHearingPlayerSound)
+                if (isHearingPlayerSoundEffective)
                 {
                     if (TryFindCoverSpot(targetPos, out Vector2 hidePosition, _previousCover))
                     {
@@ -364,7 +448,7 @@ public class EnemyMovement : MonoBehaviour
         }
 
         // --- Unified Tracking Timer Resolution ---
-        bool shouldTrackPlayer = isHearingPlayerSound || isPlayerWithinPassiveRange || isVisibleToPlayer;
+        bool shouldTrackPlayer = isHearingPlayerSoundEffective || isPlayerWithinPassiveRange || isVisibleToPlayer;
 
         if (!_inAttackMode && shouldTrackPlayer)
         {
@@ -389,7 +473,7 @@ public class EnemyMovement : MonoBehaviour
         _wasAngry = isAngryNow;
 
         // --- Physics & Translation Execution ---
-        bool speedHandledElsewhere = _inAttackMode || _isCharging || _evasionPhase != EvasionPhase.None || _isPatrolling || _isFallingBack;
+        bool speedHandledElsewhere = _inAttackMode || _isCharging || _evasionPhase != EvasionPhase.None || _isPatrolling || _isFallingBack || distractionHesitateOnly;
         if (!speedHandledElsewhere) CalculateExponentialSpeed(movementTargetPosition);
 
         ResolveObstaclesAndAvoidJitter();

@@ -1,10 +1,16 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
 public class SoundAwareness : MonoBehaviour
 {
     public bool PlayerTooClose { get; private set; }
-    public Vector2 DirectionToSound { get; private set; } 
+    public Vector2 DirectionToSound { get; private set; }
+
+    /// <summary>Fired once per sound actually perceived (post hearing-range filter) - distraction
+    /// fatigue tracking hooks into this rather than the per-frame dominant-sound fields, since a
+    /// single thrown item should only count once, not once per frame it stays on the stack.</summary>
+    public event Action<SoundEvent> OnSoundHeard;
 
     [Header("Debug Adjustments")]
     [Tooltip("Draw a circle in the Scene view for this object's hearing threshold.")]
@@ -113,9 +119,11 @@ public class SoundAwareness : MonoBehaviour
         };
 
         _perceivedSoundsStack.Add(newSound);
-        
+
         // Sorts descending: loudest sound (highest loudness value) ends up at index 0
         _perceivedSoundsStack.Sort((a, b) => b.Data.loudness.CompareTo(a.Data.loudness));
+
+        OnSoundHeard?.Invoke(soundData);
     }
 
     private void CleanExpiredSounds(float decayDuration)
