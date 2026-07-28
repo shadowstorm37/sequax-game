@@ -24,6 +24,8 @@ namespace Game.Items
         [Tooltip("Optional TextMeshPro field to show 'Page 1 / 3'. Leave empty if not wanted.")]
         [SerializeField] private TextMeshProUGUI pageNumberTextDisplay;
 
+        public static bool IsReadingNote { get; private set; } = false;
+
         private bool isPlayerInRange = false;
         private bool isReading = false;
         private int currentPage = 1;
@@ -62,6 +64,7 @@ namespace Game.Items
         private void OpenNoteUI()
         {
             isReading = true;
+            IsReadingNote = true; // Let the system know I am reading a note, this will allow me to cancel opening the pause menu with esc key
             currentPage = 1; // Always start on the first page
 
             if (interactionPromptText != null) interactionPromptText.gameObject.SetActive(false);
@@ -77,6 +80,7 @@ namespace Game.Items
 
                 UpdatePageDisplay();
             }
+            Time.timeScale = 0f; // pause game
         }
 
         private void HandlePageInput()
@@ -124,6 +128,10 @@ namespace Game.Items
         private void CloseNoteUI()
         {
             isReading = false;
+            // Remove the direct line: IsReadingNote = false;
+
+            // Start a coroutine to turn the flag off safely at the end of the frame
+            StartCoroutine(ResetReadingFlagRoutine());
 
             if (noteDisplayPanel != null)
             {
@@ -134,6 +142,16 @@ namespace Game.Items
             {
                 interactionPromptText.gameObject.SetActive(true);
             }
+
+            Time.timeScale = 1f; // unpause game
+        }
+
+        
+        private System.Collections.IEnumerator ResetReadingFlagRoutine()
+        {
+            // Wait until all Update loops across the entire game finish running for this frame
+            yield return new WaitForEndOfFrame();
+            IsReadingNote = false;
         }
 
         private void OnTriggerEnter2D(Collider2D other)

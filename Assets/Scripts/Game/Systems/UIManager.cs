@@ -7,6 +7,10 @@ public class UIManager : MonoBehaviour
 {
     [SerializeField] private GameObject pauseMenuUI; // PauseMenu Image kept here
 
+    [Header("Note System Integration")]
+    [Tooltip("Drag the same UI overlay panel used for reading notes here.")]
+    [SerializeField] private GameObject noteDisplayPanel; // Reference to block pause while reading
+
     private bool isPaused = false;
 
     void Start()
@@ -50,6 +54,12 @@ public class UIManager : MonoBehaviour
         {
             if (Input.GetKeyDown(KeyCode.Escape))
             {
+                // Check the static variable from NoteInteractable
+                if (Game.Items.NoteInteractable.IsReadingNote)
+                {
+                    return; // Skip pausing entirely on this frame
+                }
+
                 TogglePause();
             }
         }
