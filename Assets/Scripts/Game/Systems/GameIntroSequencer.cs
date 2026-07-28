@@ -31,18 +31,18 @@ public class GameIntroSequencer : MonoBehaviour
     private bool canAdvanceDialogue = false;
     private bool playerPressedAdvance = false;
 
-    // Cached reference to the sprite rendering override system
     private PlayerDirectionalSprite playerDirectionalSprite;
+    private PlayerScript playerScriptComponent;
 
     private void Start()
     {
         // Block player movement control immediately
         if (playerMovementScript != null) playerMovementScript.enabled = false;
 
-        // Try to safely locate the 8-way directional sprite rendering component
         if (playerTransform != null)
         {
             playerDirectionalSprite = playerTransform.GetComponent<PlayerDirectionalSprite>();
+            playerScriptComponent = playerTransform.GetComponent<PlayerScript>();
         }
 
         // Hide both the cutscene dialogue overlay AND your regular HUD elements at boot
@@ -89,27 +89,11 @@ public class GameIntroSequencer : MonoBehaviour
         {
             while (Vector2.Distance(playerTransform.position, offscreenWalkTarget.position) > 0.1f)
             {
-                // Force the visual art system to render the LEFT sprite asset every frame
-                if (playerDirectionalSprite != null)
-                {
-                    // Using a system reflection style fallback trick to safely bypass the private PickSprite method
-                    System.Reflection.MethodInfo pickSpriteMethod = typeof(PlayerDirectionalSprite).GetMethod("PickSprite", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                    System.Reflection.FieldInfo spriteRendererField = typeof(PlayerDirectionalSprite).GetField("spriteRenderer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                    System.Reflection.FieldInfo shadowRendererField = typeof(PlayerDirectionalSprite).GetField("shadowRenderer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                // 1. Force the flashlight vision cone to look LEFT by manually writing to the backing field
+                SetPlayerFacingDirectionField(Vector2.left);
 
-                    if (pickSpriteMethod != null && spriteRendererField != null)
-                    {
-                        Sprite leftSprite = (Sprite)pickSpriteMethod.Invoke(playerDirectionalSprite, new object[] { Vector2.left });
-                        SpriteRenderer sr = (SpriteRenderer)spriteRendererField.GetValue(playerDirectionalSprite);
-                        SpriteRenderer shadowSr = shadowRendererField != null ? (SpriteRenderer)shadowRendererField.GetValue(playerDirectionalSprite) : null;
-
-                        if (leftSprite != null && sr != null)
-                        {
-                            sr.sprite = leftSprite;
-                            if (shadowSr != null) shadowSr.sprite = leftSprite;
-                        }
-                    }
-                }
+                // 2. Force the visual art system to render the LEFT sprite asset
+                OverrideSpriteDirection(Vector2.left);
 
                 playerTransform.position = Vector2.MoveTowards(
                     playerTransform.position,
@@ -140,26 +124,9 @@ public class GameIntroSequencer : MonoBehaviour
         yield return StartCoroutine(FadeScreen(1f, 0f));
 
         // --- PHASE 5: DISCOVERY DIALOGUE ---
-        // Force the visual system to render the DOWN sprite frame right as the room is revealed
-        if (playerDirectionalSprite != null)
-        {
-            System.Reflection.MethodInfo pickSpriteMethod = typeof(PlayerDirectionalSprite).GetMethod("PickSprite", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            System.Reflection.FieldInfo spriteRendererField = typeof(PlayerDirectionalSprite).GetField("spriteRenderer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            System.Reflection.FieldInfo shadowRendererField = typeof(PlayerDirectionalSprite).GetField("shadowRenderer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-            if (pickSpriteMethod != null && spriteRendererField != null)
-            {
-                Sprite downSprite = (Sprite)pickSpriteMethod.Invoke(playerDirectionalSprite, new object[] { Vector2.down });
-                SpriteRenderer sr = (SpriteRenderer)spriteRendererField.GetValue(playerDirectionalSprite);
-                SpriteRenderer shadowSr = shadowRendererField != null ? (SpriteRenderer)shadowRendererField.GetValue(playerDirectionalSprite) : null;
-
-                if (downSprite != null && sr != null)
-                {
-                    sr.sprite = downSprite;
-                    if (shadowSr != null) shadowSr.sprite = downSprite;
-                }
-            }
-        }
+        // Force both the flashlight and sprite system to look DOWN at the body
+        SetPlayerFacingDirectionField(Vector2.down);
+        OverrideSpriteDirection(Vector2.down);
 
         yield return StartCoroutine(DisplayThought("Oh God... the park ranger is dead?!"));
         yield return StartCoroutine(DisplayThought("What... what kind of animal did this to him?"));
@@ -169,7 +136,6 @@ public class GameIntroSequencer : MonoBehaviour
         // --- PHASE 6: RELEASE TO GAMEPLAY ---
         dialoguePanel.SetActive(false);
 
-        // Turn standard gameplay UI elements back on right as control unlocks
         if (standardGameplayUI != null)
         {
             standardGameplayUI.SetActive(true);
@@ -178,6 +144,57 @@ public class GameIntroSequencer : MonoBehaviour
         if (playerMovementScript != null) playerMovementScript.enabled = true;
 
         Destroy(gameObject);
+    }
+
+    /// <summary>
+    /// Uses reflection to update the auto-implemented property backing field for FacingDirection
+    /// while PlayerScript is disabled during the cutscene.
+    /// </summary>
+    private void SetPlayerFacingDirectionField(Vector2 direction)
+    {
+        if (playerScriptComponent == null) return;
+
+        try
+        {
+            // Auto-implemented properties like 'public Vector2 FacingDirection { get; private set; }'
+            // generate a hidden backing field named '<FacingDirection>k__BackingField'
+            System.Reflection.FieldInfo backingField = typeof(PlayerScript).GetField("<FacingDirection>k__BackingField",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+            if (backingField != null)
+            {
+                backingField.SetValue(playerScriptComponent, direction);
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Failed to force flash light direction: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Forces the sprite rendering component to select a specific directional visual layout.
+    /// </summary>
+    private void OverrideSpriteDirection(Vector2 direction)
+    {
+        if (playerDirectionalSprite == null) return;
+
+        System.Reflection.MethodInfo pickSpriteMethod = typeof(PlayerDirectionalSprite).GetMethod("PickSprite", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        System.Reflection.FieldInfo spriteRendererField = typeof(PlayerDirectionalSprite).GetField("spriteRenderer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        System.Reflection.FieldInfo shadowRendererField = typeof(PlayerDirectionalSprite).GetField("shadowRenderer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+
+        if (pickSpriteMethod != null && spriteRendererField != null)
+        {
+            Sprite targetSprite = (Sprite)pickSpriteMethod.Invoke(playerDirectionalSprite, new object[] { direction });
+            SpriteRenderer sr = (SpriteRenderer)spriteRendererField.GetValue(playerDirectionalSprite);
+            SpriteRenderer shadowSr = shadowRendererField != null ? (SpriteRenderer)shadowRendererField.GetValue(playerDirectionalSprite) : null;
+
+            if (targetSprite != null && sr != null)
+            {
+                sr.sprite = targetSprite;
+                if (shadowSr != null) shadowSr.sprite = targetSprite;
+            }
+        }
     }
 
     private IEnumerator DisplayThought(string line)
