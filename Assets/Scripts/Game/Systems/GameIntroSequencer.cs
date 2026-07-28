@@ -16,12 +16,13 @@ public class GameIntroSequencer : MonoBehaviour
     [SerializeField] private GameObject skipPrompt;
 
     [Header("Gameplay UI Setup")]
-    [Tooltip("The parent GameObject containing your normal health bars, inventory HUD, etc.")]
     [SerializeField] private GameObject standardGameplayUI;
 
     [Header("Cutscene Audio")]
     [SerializeField] private AudioSource sfxAudioSource;
     [SerializeField] private AudioClip loudLoudSound;
+    [SerializeField] private AudioClip footstepSound;
+    [SerializeField] private float footstepInterval = 0.4f;
 
     [Header("Scene Transition Markers")]
     [SerializeField] private Transform offscreenWalkTarget;
@@ -30,24 +31,17 @@ public class GameIntroSequencer : MonoBehaviour
 
     private bool canAdvanceDialogue = false;
     private bool playerPressedAdvance = false;
-
-    private PlayerDirectionalSprite playerDirectionalSprite;
     private PlayerScript playerScriptComponent;
 
     private void Start()
     {
-        // Block player movement control immediately, and hold off any systems
-        // (e.g. monster aggro timers) that key off the player having control
-        GameState.PlayerHasControl = false;
         if (playerMovementScript != null) playerMovementScript.enabled = false;
 
         if (playerTransform != null)
         {
-            playerDirectionalSprite = playerTransform.GetComponent<PlayerDirectionalSprite>();
             playerScriptComponent = playerTransform.GetComponent<PlayerScript>();
         }
 
-        // Hide both the cutscene dialogue overlay AND your regular HUD elements at boot
         dialoguePanel.SetActive(false);
         skipPrompt.SetActive(false);
 
@@ -83,25 +77,36 @@ public class GameIntroSequencer : MonoBehaviour
 
         // --- PHASE 2: INITIAL THOUGHT BUBBLES ---
         yield return StartCoroutine(DisplayThought("What was that...?"));
-        yield return StartCoroutine(DisplayThought("That sounded like it was coming from the Ranger station..."));
-        yield return StartCoroutine(DisplayThought("I should go check it out..."));
+        yield return StartCoroutine(DisplayThought("That sounded like it was coming from the Ranger station."));
+        yield return StartCoroutine(DisplayThought("I should go check it out."));
 
         // --- PHASE 3: AUTOMATIC WALK OFFSCREEN ---
         if (offscreenWalkTarget != null && playerTransform != null)
         {
+            float footstepTimer = 0f;
+
             while (Vector2.Distance(playerTransform.position, offscreenWalkTarget.position) > 0.1f)
             {
-                // 1. Force the flashlight vision cone to look LEFT by manually writing to the backing field
+                // Force the direction field. PlayerDirectionalSprite's LateUpdate handles the rest!
                 SetPlayerFacingDirectionField(Vector2.left);
-
-                // 2. Force the visual art system to render the LEFT sprite asset
-                OverrideSpriteDirection(Vector2.left);
 
                 playerTransform.position = Vector2.MoveTowards(
                     playerTransform.position,
                     offscreenWalkTarget.position,
                     walkSpeed * Time.deltaTime
                 );
+
+                // Handle footstep pacing
+                footstepTimer += Time.deltaTime;
+                if (footstepTimer >= footstepInterval)
+                {
+                    if (sfxAudioSource != null && footstepSound != null)
+                    {
+                        sfxAudioSource.PlayOneShot(footstepSound, 0.4f);
+                    }
+                    footstepTimer = 0f;
+                }
+
                 yield return null;
             }
         }
@@ -112,29 +117,19 @@ public class GameIntroSequencer : MonoBehaviour
         if (playerTransform != null && interiorSpawnPoint != null)
         {
             playerTransform.position = interiorSpawnPoint.position;
-
-            // Force physical rotation update on the base transform container to look DOWN (0, -1)
-            Rigidbody2D rb = playerTransform.GetComponent<Rigidbody2D>();
-            if (rb != null)
-            {
-                Quaternion targetRotation = Quaternion.LookRotation(playerTransform.forward, Vector2.down);
-                rb.MoveRotation(targetRotation);
-            }
         }
 
         yield return new WaitForSeconds(0.5f);
         yield return StartCoroutine(FadeScreen(1f, 0f));
 
         // --- PHASE 5: DISCOVERY DIALOGUE ---
-        // Force both the flashlight and sprite system to look DOWN at the body
+        // Force the flashlight cone, sprite, and shadow to look DOWN at the body
         SetPlayerFacingDirectionField(Vector2.down);
-        OverrideSpriteDirection(Vector2.down);
 
         yield return StartCoroutine(DisplayThought("Oh God... the park ranger is dead?!"));
         yield return StartCoroutine(DisplayThought("What... what kind of animal did this to him?"));
         yield return StartCoroutine(DisplayThought("I need to get out of here...wait...where are my car keys? They were in my pocket!"));
-        yield return StartCoroutine(DisplayThought("I should probably read that manual on the pedestal for guidance"));
-        yield return StartCoroutine(DisplayThought("I'm going to have to go out there and find them..."));
+        yield return StartCoroutine(DisplayThought("I'm going to have to go out there and find them... I should probably read that manual on the pedestal for guidance"));
 
         // --- PHASE 6: RELEASE TO GAMEPLAY ---
         dialoguePanel.SetActive(false);
@@ -145,23 +140,16 @@ public class GameIntroSequencer : MonoBehaviour
         }
 
         if (playerMovementScript != null) playerMovementScript.enabled = true;
-        GameState.PlayerHasControl = true;
 
         Destroy(gameObject);
     }
 
-    /// <summary>
-    /// Uses reflection to update the auto-implemented property backing field for FacingDirection
-    /// while PlayerScript is disabled during the cutscene.
-    /// </summary>
     private void SetPlayerFacingDirectionField(Vector2 direction)
     {
         if (playerScriptComponent == null) return;
 
         try
         {
-            // Auto-implemented properties like 'public Vector2 FacingDirection { get; private set; }'
-            // generate a hidden backing field named '<FacingDirection>k__BackingField'
             System.Reflection.FieldInfo backingField = typeof(PlayerScript).GetField("<FacingDirection>k__BackingField",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
 
@@ -172,32 +160,7 @@ public class GameIntroSequencer : MonoBehaviour
         }
         catch (System.Exception e)
         {
-            Debug.LogError($"Failed to force flash light direction: {e.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Forces the sprite rendering component to select a specific directional visual layout.
-    /// </summary>
-    private void OverrideSpriteDirection(Vector2 direction)
-    {
-        if (playerDirectionalSprite == null) return;
-
-        System.Reflection.MethodInfo pickSpriteMethod = typeof(PlayerDirectionalSprite).GetMethod("PickSprite", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        System.Reflection.FieldInfo spriteRendererField = typeof(PlayerDirectionalSprite).GetField("spriteRenderer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-        System.Reflection.FieldInfo shadowRendererField = typeof(PlayerDirectionalSprite).GetField("shadowRenderer", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-
-        if (pickSpriteMethod != null && spriteRendererField != null)
-        {
-            Sprite targetSprite = (Sprite)pickSpriteMethod.Invoke(playerDirectionalSprite, new object[] { direction });
-            SpriteRenderer sr = (SpriteRenderer)spriteRendererField.GetValue(playerDirectionalSprite);
-            SpriteRenderer shadowSr = shadowRendererField != null ? (SpriteRenderer)shadowRendererField.GetValue(playerDirectionalSprite) : null;
-
-            if (targetSprite != null && sr != null)
-            {
-                sr.sprite = targetSprite;
-                if (shadowSr != null) shadowSr.sprite = targetSprite;
-            }
+            Debug.LogError($"Failed to update player direction vector: {e.Message}");
         }
     }
 
