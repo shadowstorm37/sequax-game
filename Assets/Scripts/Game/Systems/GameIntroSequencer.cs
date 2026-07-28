@@ -81,8 +81,8 @@ public class GameIntroSequencer : MonoBehaviour
 
         // --- PHASE 2: INITIAL THOUGHT BUBBLES ---
         yield return StartCoroutine(DisplayThought("What was that...?"));
-        yield return StartCoroutine(DisplayThought("That sounded like it was coming from the Ranger station."));
-        yield return StartCoroutine(DisplayThought("I should go check it out."));
+        yield return StartCoroutine(DisplayThought("That sounded like it was coming from the Ranger station..."));
+        yield return StartCoroutine(DisplayThought("I should go check it out..."));
 
         // --- PHASE 3: AUTOMATIC WALK OFFSCREEN ---
         if (offscreenWalkTarget != null && playerTransform != null)
@@ -130,8 +130,9 @@ public class GameIntroSequencer : MonoBehaviour
 
         yield return StartCoroutine(DisplayThought("Oh God... the park ranger is dead?!"));
         yield return StartCoroutine(DisplayThought("What... what kind of animal did this to him?"));
-        yield return StartCoroutine(DisplayThought("I need to get out of here...wait...where are my car keys? They were in my pockert!"));
-        yield return StartCoroutine(DisplayThought("I'm going to have to go out there and find them... I should probably read that manual on the pedestal for guidance"));
+        yield return StartCoroutine(DisplayThought("I need to get out of here...wait...where are my car keys? They were in my pocket!"));
+        yield return StartCoroutine(DisplayThought("I should probably read that manual on the pedestal for guidance"));
+        yield return StartCoroutine(DisplayThought("I'm going to have to go out there and find them..."));
 
         // --- PHASE 6: RELEASE TO GAMEPLAY ---
         dialoguePanel.SetActive(false);
