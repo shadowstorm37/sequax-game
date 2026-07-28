@@ -62,6 +62,7 @@ public class VisionConeMask : MonoBehaviour
     private static readonly int VisionWorldDiameterId = Shader.PropertyToID("_VisionWorldDiameter");
     private static readonly int VisionCamWorldPosId = Shader.PropertyToID("_VisionCamWorldPos");
     private static readonly int VisionOrthoSizeId = Shader.PropertyToID("_VisionOrthoSize");
+    private static readonly int ExtraVisionActiveId = Shader.PropertyToID("_ExtraVisionActive");
 
     private PlayerScript player;
     private Camera mainCamera;
@@ -101,6 +102,11 @@ public class VisionConeMask : MonoBehaviour
 
         occlusionRayCount = Mathf.Max(occlusionRayCount, 8);
         visibleDistances = new float[occlusionRayCount];
+
+        // No ground light exists until something (e.g. a thrown phone) enables one, but the
+        // shader global otherwise sits unset - explicitly zero it so the very first frame
+        // doesn't sample stale/undefined data.
+        Shader.SetGlobalFloat(ExtraVisionActiveId, 0f);
 
         InitializeTexture();
         RegenerateVisionTexture();
@@ -357,14 +363,19 @@ public class VisionConeMask : MonoBehaviour
     /// </summary>
     public float SampleVisibility(Vector2 worldPoint)
     {
-        if (player == null) return 0f;
+        // Sampled independently of the player's cone/circle below (no obstacle occlusion,
+        // no facing dependency - see GroundLightSource), so it's computed up front and
+        // combined via Max at every return point rather than only at the end.
+        float groundLightVisibility = GroundLightSource.SampleVisibility(worldPoint);
+
+        if (player == null) return groundLightVisibility;
 
         Vector2 origin = transform.position;
         Vector2 toPoint = worldPoint - origin;
         float distWorld = toPoint.magnitude;
 
         float maxRadius = Mathf.Max(coneRadius, circleRadius);
-        if (distWorld > maxRadius + fadeWidth) return 0f;
+        if (distWorld > maxRadius + fadeWidth) return groundLightVisibility;
 
         float obstacleDist = maxRadius;
         if (distWorld > 0.0001f)
@@ -373,7 +384,7 @@ public class VisionConeMask : MonoBehaviour
             if (hit.collider != null)
             {
                 obstacleDist = hit.distance;
-                if (distWorld > obstacleDist) return 0f; // point itself is behind the obstacle
+                if (distWorld > obstacleDist) return groundLightVisibility; // point itself is behind the obstacle
             }
         }
 
@@ -386,9 +397,14 @@ public class VisionConeMask : MonoBehaviour
         float coneEffectiveRadius = Mathf.Min(coneRadius, obstacleDist);
         float halfConeAngleDeg = coneAngleDegrees * 0.5f;
 
-        return ComputeVisibility(
+        float coneVisibility = ComputeVisibility(
             distWorld, angleFromForwardDeg, circleEffectiveRadius, coneEffectiveRadius,
             halfConeAngleDeg, fadeWidth, fadeAngleDegrees);
+
+        // A dropped, glowing item (e.g. the thrown phone) reveals its own small patch of
+        // darkness regardless of where the player is facing - independent of and additive
+        // with the player's own cone/circle.
+        return Mathf.Max(coneVisibility, groundLightVisibility);
     }
 
     private float SampleObstacleDistance(float angleDeg, float rayStepDeg)

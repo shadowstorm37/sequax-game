@@ -52,6 +52,15 @@ Shader "FullScreen/VisionDesaturate"
             float _VignetteStrength;
             float _VignetteStart;
 
+            // Small secondary reveal circle for a dropped glowing item (e.g. the thrown
+            // phone) - see GroundLightSource.cs. Independent of the baked vision texture:
+            // just an analytic radial falloff around _ExtraVisionOrigin, active whenever
+            // _ExtraVisionActive > 0.5.
+            float _ExtraVisionActive;
+            float2 _ExtraVisionOrigin;
+            float _ExtraVisionRadius;
+            float _ExtraVisionFade;
+
             half4 Frag(Varyings input) : SV_Target
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
@@ -77,6 +86,14 @@ Shader "FullScreen/VisionDesaturate"
                 else if (_VisionWorldDiameter > 0.0)
                 {
                     visibility = 0.0;
+                }
+
+                if (_ExtraVisionActive > 0.5)
+                {
+                    float extraDist = length(worldPos - _ExtraVisionOrigin);
+                    float safeFade = max(_ExtraVisionFade, 0.001);
+                    float extraVisibility = 1.0 - saturate((extraDist - (_ExtraVisionRadius - safeFade)) / safeFade);
+                    visibility = max(visibility, extraVisibility);
                 }
 
                 half luminance = dot(sceneColor.rgb, half3(0.299h, 0.587h, 0.114h));

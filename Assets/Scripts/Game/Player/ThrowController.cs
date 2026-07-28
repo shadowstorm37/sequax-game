@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using Game.Items;
+using TMPro;
 using UnityEngine;
 
 [RequireComponent(typeof(Inventory))]
@@ -24,6 +25,20 @@ public class ThrowController : MonoBehaviour
     [Header("Throw Audio")]
     [Tooltip("One ThrowableItemAudio per item, each with its own AudioSource/clip assigned in the Inspector.")]
     [SerializeField] private ThrowableItemAudio[] throwAudioSources;
+
+    [Header("Phone Pickup Prompt")]
+    [Tooltip("Dedicated 'Press E' prompt for the landed phone - it's created at runtime via " +
+             "AddComponent, so unlike hand-placed pickups it has no Inspector-wired prompt of " +
+             "its own. Duplicate one of the existing 'ItemPromptText (TMP)' objects under the " +
+             "GameUI canvas and drag the new copy here so the phone doesn't share one with " +
+             "another item.")]
+    [SerializeField] private TextMeshProUGUI phonePickupPromptText;
+
+    [Header("Phone Ground Light")]
+    [Tooltip("Radius of the small darkness-revealing circle the phone creates once thrown and landed.")]
+    [SerializeField] private float phoneGroundLightRadius = 2.5f;
+    [Tooltip("How far (world units) before the edge of that circle the reveal fades out.")]
+    [SerializeField] private float phoneGroundLightFade = 1f;
 
     [Header("Obstacle Blocking")]
     [Tooltip("Same Obstacles layer the vision cone occludes against - throws are blocked by it too. " +
@@ -248,7 +263,14 @@ public class ThrowController : MonoBehaviour
         {
             pickup = visual.AddComponent<ItemPickup>();
         }
-        pickup.Initialize(ItemId.Phone);
+        pickup.Initialize(ItemId.Phone, phonePickupPromptText);
+
+        GroundLightSource groundLight = visual.GetComponent<GroundLightSource>();
+        if (groundLight == null)
+        {
+            groundLight = visual.AddComponent<GroundLightSource>();
+        }
+        groundLight.Initialize(phoneGroundLightRadius, phoneGroundLightFade);
     }
 
     private GameObject GetVisualPrefab(ItemId itemId)

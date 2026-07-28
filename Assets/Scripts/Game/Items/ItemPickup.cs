@@ -17,9 +17,15 @@ namespace Game.Items
 
         private bool isPlayerInRange = false;
 
-        public void Initialize(ItemId id)
+        /// <summary>
+        /// Wires up an ItemPickup added at runtime (e.g. by ThrowController once a thrown item
+        /// lands), which has no Inspector-assigned prompt text of its own. promptText is
+        /// optional - pass null to behave like before (pickup still works, just silently).
+        /// </summary>
+        public void Initialize(ItemId id, TextMeshProUGUI promptText = null)
         {
             itemId = id;
+            if (promptText != null) interactionPromptText = promptText;
         }
 
         private void Start()
