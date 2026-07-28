@@ -262,7 +262,7 @@ MonoBehaviour:
     I''m too tired to do anything else, I''m going to sleep...'
   backgroundSprites:
   - {fileID: -5535503189541752817, guid: 7b296ca4284c9e84693654e982a79bd2, type: 3}
-  - {fileID: 6414535848321160473, guid: aa1abc532c112304b8951e85c1e14f1f, type: 3}
+  - {fileID: 6049075895618049953, guid: ab8ab1a08c6c71445b55f5785c21f0f8, type: 3}
   - {fileID: 5872294019788502827, guid: 9ebfcbec66a12ad4480ca1e45c2f86a7, type: 3}
   typingSpeed: 0.1
   delayBetweenBeats: 3.5
