@@ -12,9 +12,9 @@ public class EnemyMovement : MonoBehaviour
     [Header("Player Tracking / Aggro")]
     [SerializeField] private string _playerTag = "Player";
     [SerializeField] private float _timeToAttack = 10f; 
-    [SerializeField] private float _minPlayerDistance = 3f; 
-    [SerializeField] private float _instantAttackDistance = 2f; 
-    [SerializeField] private float _passiveTrackingRange = 5f;  
+    [SerializeField] private float _minPlayerDistance = 6f;
+    [SerializeField] private float _instantAttackDistance = 2f;
+    [SerializeField] private float _passiveTrackingRange = 8f;
     
     [Header("Vision Evasion")]
     [SerializeField] private VisionConeMask _playerVision;
@@ -250,6 +250,9 @@ public class EnemyMovement : MonoBehaviour
 
     private void FixedUpdate()
     {
+        // Freeze all aggro/attack timers and movement while the in-game intro still has control locked
+        if (!GameState.PlayerHasControl) return;
+
         UpdateEscalation();
 
         // --- Instant Proximity Aggro Check ---

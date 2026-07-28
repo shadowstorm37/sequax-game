@@ -36,7 +36,9 @@ public class GameIntroSequencer : MonoBehaviour
 
     private void Start()
     {
-        // Block player movement control immediately
+        // Block player movement control immediately, and hold off any systems
+        // (e.g. monster aggro timers) that key off the player having control
+        GameState.PlayerHasControl = false;
         if (playerMovementScript != null) playerMovementScript.enabled = false;
 
         if (playerTransform != null)
@@ -143,6 +145,7 @@ public class GameIntroSequencer : MonoBehaviour
         }
 
         if (playerMovementScript != null) playerMovementScript.enabled = true;
+        GameState.PlayerHasControl = true;
 
         Destroy(gameObject);
     }
