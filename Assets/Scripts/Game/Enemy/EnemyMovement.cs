@@ -11,10 +11,12 @@ public class EnemyMovement : MonoBehaviour
 
     [Header("Player Tracking / Aggro")]
     [SerializeField] private string _playerTag = "Player";
-    [SerializeField] private float _timeToAttack = 10f; 
+    [SerializeField] private float _timeToAttack = 10f;
     [SerializeField] private float _minPlayerDistance = 6f;
     [SerializeField] private float _instantAttackDistance = 2f;
     [SerializeField] private float _passiveTrackingRange = 8f;
+    [Tooltip("Flat speed while actively hunting to kill. Tuned between the player's walk (3.5) and sprint (6) speeds, so a chase is tense but survivable rather than an instant, unavoidable catch.")]
+    [SerializeField] private float _attackSpeed = 5f;
     
     [Header("Vision Evasion")]
     [SerializeField] private VisionConeMask _playerVision;
@@ -33,9 +35,13 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _repositionTimeout = 5f;
 
     [Header("Charge (Bold Approach)")]
-    [Tooltip("Random cooldown range between charge attempts.")]
-    [SerializeField] private float _chargeCooldownMin = 10f;
-    [SerializeField] private float _chargeCooldownMax = 20f;
+    [Tooltip("Minimum gap between charge attempts - once one ends, he can't even consider another until this expires.")]
+    [SerializeField] private float _chargeCooldownMin = 12f;
+    [SerializeField] private float _chargeCooldownMax = 22f;
+    [Tooltip("Once the cooldown has expired and he has an opening (knows where the player is, at a valid distance, not seen, player not indoors), how often he re-rolls whether to actually take it.")]
+    [SerializeField] private float _chargeOpportunityCheckInterval = 1f;
+    [Tooltip("Chance per re-roll that he takes an available opening - keeps charges feeling like he caught you off guard rather than a clockwork timer.")]
+    [SerializeField, Range(0f, 1f)] private float _chargeChancePerCheck = 0.2f;
     [SerializeField] private float _chargeSpeed = 11f;
     [SerializeField] private float _chargeDuration = 3f;
     [SerializeField] private float _chargeMinDistance = 4f;
@@ -72,8 +78,8 @@ public class EnemyMovement : MonoBehaviour
     [Tooltip("Extra rate added to the escalation clock per key item collected. 0.5 means each item speeds it up by 50%.")]
     [SerializeField] private float _escalationPerItemBonus = 0.5f;
     [Tooltip("Charge cooldown range once fully escalated - keeps a floor above zero so charges are frequent late-game, never nonstop.")]
-    [SerializeField] private float _escalatedChargeCooldownMin = 4f;
-    [SerializeField] private float _escalatedChargeCooldownMax = 8f;
+    [SerializeField] private float _escalatedChargeCooldownMin = 5f;
+    [SerializeField] private float _escalatedChargeCooldownMax = 10f;
     [Tooltip("Seconds of sustained tracking pressure needed to count as 'angry' once fully escalated - kept above zero so it's never instant, just faster to reach. You still need to be able to make it back to the car.")]
     [SerializeField] private float _angryTrackingSecondsEscalated = 25f;
 
@@ -105,6 +111,21 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _trackingAreaRadius = 1.5f;
     [SerializeField] private float _attackModeDuration = 7f;
 
+    [Header("Stuck Recovery")]
+    [Tooltip("If he's trying to move but makes less than the movement threshold of net progress for this long, he's physically wedged (e.g. jammed between two colliders) - teleport him closer to the player to free him.")]
+    [SerializeField] private float _stuckDuration = 10f;
+    [Tooltip("Net displacement below this over the stuck duration counts as 'not actually moving'.")]
+    [SerializeField] private float _stuckMovementThreshold = 1f;
+    [SerializeField] private float _stuckTeleportDistance = 6f;
+
+    [Header("Keys Endgame")]
+    [Tooltip("Fixed interior point (e.g. inside the occult house) he warps to when the keys are picked up. Spawning relative to the player's own position can land him outside and bottle the player into the building, so this should be a hand-placed empty GameObject inside the occult house's interior floor - not near a doorway or wall.")]
+    [SerializeField] private Transform _keysAmbushSpawnPoint;
+    [Tooltip("Fallback distance from the player if no spawn point is assigned above.")]
+    [SerializeField] private float _keysAmbushDistance = 5f;
+    [Tooltip("Delay after picking up the car keys before he warps in and starts the chase - gives the player a beat to react instead of an instant ambush.")]
+    [SerializeField] private float _keysAmbushDelay = 2f;
+
     [Header("Distraction Fatigue")]
     [Tooltip("How many times a distraction sound type (per item) can be used at full strength before he starts tuning it out.")]
     [SerializeField] private int _fatigueThreshold = 2;
@@ -134,6 +155,7 @@ public class EnemyMovement : MonoBehaviour
     private float _chargeWindupTimer;
     private float _chargeTimer;
     private float _chargeCooldownTimer;
+    private float _chargeOpportunityTimer;
     private bool _wasAngry;
     private bool _lastVisibleToPlayer;
 
@@ -153,6 +175,10 @@ public class EnemyMovement : MonoBehaviour
     private float _escalationProgress;
     private Inventory _playerInventory;
 
+    // Once the player has the car keys, the run is over one way or another - he warps to them and
+    // never lets up again, so this permanently latches attack mode instead of letting it expire.
+    private bool _keysEndgameActive;
+
     private SoundAwareness _playerAwarenessController;
     private readonly Dictionary<SoundType, int> _distractionUseCounts = new();
 
@@ -164,6 +190,9 @@ public class EnemyMovement : MonoBehaviour
     private Collider2D _activeCover;
     private Collider2D _previousCover;
     private float _coverSwitchTimer;
+
+    private float _stuckTimer;
+    private Vector2 _stuckCheckPosition;
 
     // "Really angry": once the tracking meter crosses this many seconds of sustained pressure, a
     // spotted charge commits to attack instead of fleeing, and contact from behind (outside the
@@ -199,9 +228,13 @@ public class EnemyMovement : MonoBehaviour
         {
             _playerTransform = playerObj.transform;
             _playerInventory = playerObj.GetComponent<Inventory>();
+            if (_playerInventory != null)
+            {
+                _playerInventory.OnKeyItemAdded += HandleKeyItemCollected;
+            }
 
             if (_playerVision == null)
-                _playerVision = playerObj.GetComponentInChildren<VisionConeMask>(); 
+                _playerVision = playerObj.GetComponentInChildren<VisionConeMask>();
         }
     }
 
@@ -211,6 +244,46 @@ public class EnemyMovement : MonoBehaviour
         {
             _playerAwarenessController.OnSoundHeard -= HandleDistractionSoundHeard;
         }
+
+        if (_playerInventory != null)
+        {
+            _playerInventory.OnKeyItemAdded -= HandleKeyItemCollected;
+        }
+    }
+
+    // Grabbing the car keys is the endgame signal: he stops caring about stealth entirely, warps
+    // to wherever the player is (inside the building with them), and hunts them down for good.
+    private void HandleKeyItemCollected(ItemId itemId)
+    {
+        if (itemId != ItemId.CarKeys || _playerTransform == null) return;
+
+        StartCoroutine(KeysAmbushAfterDelay());
+    }
+
+    private System.Collections.IEnumerator KeysAmbushAfterDelay()
+    {
+        yield return new WaitForSeconds(_keysAmbushDelay);
+
+        if (_playerTransform == null) yield break;
+
+        _keysEndgameActive = true;
+
+        if (_keysAmbushSpawnPoint != null)
+        {
+            transform.position = _keysAmbushSpawnPoint.position;
+            _activeCover = null;
+            _previousCover = null;
+        }
+        else
+        {
+            TeleportNearPlayer(_keysAmbushDistance);
+        }
+
+        _isCharging = false;
+        _isPatrolling = false;
+        _isFallingBack = false;
+        EndEvasion();
+        EnterAttackMode();
     }
 
     private static bool IsDistractionSound(SoundType type) =>
@@ -334,10 +407,30 @@ public class EnemyMovement : MonoBehaviour
         if (!_inAttackMode && !_isCharging && _evasionPhase == EvasionPhase.None && !isVisibleToPlayer)
         {
             _chargeCooldownTimer -= Time.fixedDeltaTime;
-            if (_chargeCooldownTimer <= 0f && knowsPlayerLocation &&
-                distanceToPlayer >= _chargeMinDistance && distanceToPlayer <= _chargeMaxDistance)
+
+            // The cooldown is only a minimum gap, not a guarantee - once it's expired, he still needs
+            // an actual opening (knows where the player is, at a valid distance, player not holed up
+            // indoors) and then re-rolls periodically whether to take it. This keeps charges from
+            // firing like clockwork the instant the cooldown hits zero.
+            bool hasOpening = _chargeCooldownTimer <= 0f && knowsPlayerLocation &&
+                distanceToPlayer >= _chargeMinDistance && distanceToPlayer <= _chargeMaxDistance &&
+                !RoofVisibilityTrigger.IsPlayerIndoors;
+
+            if (hasOpening)
             {
-                StartCharge();
+                _chargeOpportunityTimer -= Time.fixedDeltaTime;
+                if (_chargeOpportunityTimer <= 0f)
+                {
+                    _chargeOpportunityTimer = _chargeOpportunityCheckInterval;
+                    if (Random.value < _chargeChancePerCheck)
+                    {
+                        StartCharge();
+                    }
+                }
+            }
+            else
+            {
+                _chargeOpportunityTimer = 0f; // re-roll immediately the moment an opening appears
             }
         }
 
@@ -482,6 +575,45 @@ public class EnemyMovement : MonoBehaviour
         ResolveObstaclesAndAvoidJitter();
         KeepUpright();
         SetVelocity();
+        UpdateStuckRecovery();
+    }
+
+    // Guards against getting physically wedged (e.g. jammed between two colliders where obstacle
+    // avoidance can't resolve a way out) - if he's actively trying to move but isn't making real
+    // progress, warp him closer to the player instead of leaving him stuck in place indefinitely.
+    private void UpdateStuckRecovery()
+    {
+        if (_desiredDirection.sqrMagnitude < 0.01f)
+        {
+            _stuckTimer = 0f;
+            _stuckCheckPosition = transform.position;
+            return;
+        }
+
+        if (Vector2.Distance(transform.position, _stuckCheckPosition) >= _stuckMovementThreshold)
+        {
+            _stuckTimer = 0f;
+            _stuckCheckPosition = transform.position;
+            return;
+        }
+
+        _stuckTimer += Time.fixedDeltaTime;
+        if (_stuckTimer >= _stuckDuration)
+        {
+            TeleportNearPlayer(_stuckTeleportDistance);
+            _stuckTimer = 0f;
+            _stuckCheckPosition = transform.position;
+        }
+    }
+
+    private void TeleportNearPlayer(float distance)
+    {
+        if (_playerTransform == null) return;
+
+        Vector2 offset = Random.insideUnitCircle.normalized * distance;
+        transform.position = (Vector2)_playerTransform.position + offset;
+        _activeCover = null;
+        _previousCover = null;
     }
 
     // Elapsed run time is the baseline driver; each key item collected speeds up the effective
@@ -879,7 +1011,7 @@ public class EnemyMovement : MonoBehaviour
         PlaySound(_attackWarningClip);
         _activeCover = null;
         _previousCover = null;
-        _currentDynamicSpeed = _maxSpeed * 3f;
+        _currentDynamicSpeed = _attackSpeed;
         _inAttackMode = true;
         _attackTimer = _attackModeDuration;
         _trackingTimer = 0f;
@@ -890,7 +1022,9 @@ public class EnemyMovement : MonoBehaviour
     private void HandleAttackingMode()
     {
         SetAttackDirection();
-        
+
+        if (_keysEndgameActive) return; // once the keys are grabbed, attack mode never lapses
+
         _attackTimer -= Time.fixedDeltaTime;
         if (_attackTimer <= 0f)
         {
