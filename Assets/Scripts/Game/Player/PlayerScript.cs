@@ -10,6 +10,8 @@ public class PlayerScript : MonoBehaviour
     [SerializeField] private float crouchSpeed = 1.5f;
     [SerializeField] private float walkSpeed = 3.5f;
     [SerializeField] private float sprintSpeed = 6f;
+    [Tooltip("Flat multiplier applied to movement speed once the keys endgame latches (GameState.KeysEndgameActive). Matches the multiplier EnemyMovement applies to its own speeds, so the final chase gets faster overall without changing the relative gap between the two.")]
+    [SerializeField] private float keysEndgameSpeedMultiplier = 1.25f;
 
     [Header("Rotation")]
     [Tooltip("Degrees per second the player turns to face FacingDirection.")]
@@ -165,7 +167,8 @@ public class PlayerScript : MonoBehaviour
         if (bushZones > 0)
             environmentalMultiplier = Mathf.Min(environmentalMultiplier, bushSpeedMultiplier);
 
-        rb.linearVelocity = moveInput * speed * GetDirectionalSpeedMultiplier() * environmentalMultiplier;
+        float endgameMultiplier = GameState.KeysEndgameActive ? keysEndgameSpeedMultiplier : 1f;
+        rb.linearVelocity = moveInput * speed * GetDirectionalSpeedMultiplier() * environmentalMultiplier * endgameMultiplier;
     }
 
     // Full speed moving into your own facing/vision direction, reduced speed moving

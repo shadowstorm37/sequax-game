@@ -8,4 +8,8 @@ public static class GameState
 {
     // Defaults true so scenes without a GameIntroSequencer (e.g. testing a level directly) work normally.
     public static bool PlayerHasControl = true;
+
+    // Set once by EnemyMovement when the car-keys ambush latches attack mode permanently. Read by
+    // PlayerScript so both sides of the final chase speed up together instead of just the monster.
+    public static bool KeysEndgameActive;
 }

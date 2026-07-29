@@ -16,23 +16,31 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _instantAttackDistance = 2f;
     [SerializeField] private float _passiveTrackingRange = 8f;
     [Tooltip("Flat speed while actively hunting to kill. Tuned between the player's walk (2.5) and sprint (3) speeds, so a chase is tense but survivable rather than an instant, unavoidable catch.")]
-    [SerializeField] private float _attackSpeed = 2.8f;
+    [SerializeField] private float _attackSpeed = 0.5f;
     
     [Header("Vision Evasion")]
     [SerializeField] private VisionConeMask _playerVision;
     [SerializeField] private float _evasionSpeed = 8f;
     [SerializeField] private float _maxVisionEvadeDistance = 15f; // NEW: Enemy ignores vision cone beyond this distance
+    [Tooltip("Extra angle (degrees) beyond the vision cone's edge that a no-cover-available escape aims for, so he clears the boundary with room to spare instead of just tickling it and re-triggering evasion a moment later.")]
+    [SerializeField] private float _visionEscapeAngleBuffer = 15f;
+    [Tooltip("Extra distance beyond the vision circle's radius a no-cover-available escape aims for when standing inside the always-visible circle around the player.")]
+    [SerializeField] private float _visionEscapeRadiusBuffer = 2f;
 
     [Header("Evasion Follow-up")]
-    [Tooltip("Chance (0-1), once line of sight is broken, that the monster fully disengages instead of repositioning to flank.")]
-    [SerializeField, Range(0f, 1f)] private float _disengageChance = 0.4f;
+    [Tooltip("Chance (0-1), once line of sight is broken, that he first opens up distance before flanking rather than beginning the flank immediately. Skipped outright if he can still hear the player - no reason to back off when he already knows exactly where you are. Either way this always leads into a flank attempt, never a standalone retreat.")]
+    [SerializeField, Range(0f, 1f)] private float _disengageChance = 0.15f;
     [SerializeField] private float _disengageDurationMin = 2f;
     [SerializeField] private float _disengageDurationMax = 4f;
-    [Tooltip("How far ahead of the player's facing direction the flank point is placed.")]
-    [SerializeField] private float _repositionForwardDistance = 7f;
-    [SerializeField] private float _repositionLateralOffset = 4f;
+    [Tooltip("Shapes the DIRECTION of the flank point (how far ahead of the player's facing vs. how far to the side), not its distance - the actual distance is computed at runtime to clear the camera's view, so he's never visibly circling around in frame. Only the ratio between these two matters.")]
+    [SerializeField] private float _repositionForwardDistance = 10f;
+    [SerializeField] private float _repositionLateralOffset = 6f;
+    [Tooltip("Extra distance added past the point the flank direction actually exits the camera's view, so he clears the frame edge with room to spare instead of hugging it.")]
+    [SerializeField] private float _repositionOffCameraMargin = 2f;
     [Tooltip("Safety cutoff so a flank attempt can't wander forever if the point is unreachable.")]
     [SerializeField] private float _repositionTimeout = 5f;
+    [Tooltip("How often the flank point re-aims at the player's current position/facing while he's closing in. Without this the target is a single guess made the instant the flank starts, which goes stale if the player moves or turns before he gets there - he'd end up beside or behind them instead of ahead.")]
+    [SerializeField] private float _repositionRetargetInterval = 0.5f;
 
     [Header("Charge (Bold Approach)")]
     [Tooltip("Minimum gap between charge attempts - once one ends, he can't even consider another until this expires.")]
@@ -91,6 +99,8 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private AudioClip _angryClip;
     [Tooltip("Played the instant attack mode is entered, from any trigger.")]
     [SerializeField] private AudioClip _attackWarningClip;
+    [Tooltip("Played instead of the normal attack warning when attack mode triggers after the keys endgame has started - a distinct cue for the final hunt, not the everyday chase.")]
+    [SerializeField] private AudioClip _keysEndgameAttackClip;
     [SerializeField, Range(0f, 1f)] private float _audioVolume = 1f;
 
     [Header("Hiding / Cover")]
@@ -125,18 +135,28 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _keysAmbushDistance = 5f;
     [Tooltip("Delay after picking up the car keys before he warps in and starts the chase - gives the player a beat to react instead of an instant ambush.")]
     [SerializeField] private float _keysAmbushDelay = 2f;
+    [Tooltip("Optional hand-placed point at/just outside the building's doorway. Attack mode normally beelines straight at the player, but reactive obstacle avoidance alone can hang him up oscillating in a narrow doorway gap when the spawn point is indoors and the player is outside. When set, he routes through this point first, then hands off to chasing the player directly once through it.")]
+    [SerializeField] private Transform _keysAmbushExitPoint;
+    [Tooltip("How close to the exit point counts as having made it through the door.")]
+    [SerializeField] private float _exitPointArrivalDistance = 1f;
+    [Tooltip("Flat multiplier applied to every movement speed (attack, charge, evasion, fallback, patrol) once the keys endgame latches. Raises the overall tempo of the final chase without changing the relative gap between his speed and the player's - PlayerScript applies the same multiplier to its own speeds via GameState.KeysEndgameActive, so keep the two in sync.")]
+    [SerializeField] private float _keysEndgameSpeedMultiplier = 1.25f;
 
     [Header("Distraction Fatigue")]
     [Tooltip("How many times a distraction sound type (per item) can be used at full strength before he starts tuning it out.")]
-    [SerializeField] private int _fatigueThreshold = 2;
+    [SerializeField] private int _fatigueThreshold = 4;
     [Tooltip("Additional uses after the threshold before the response bottoms out at its floor below.")]
     [SerializeField] private int _fatigueDecaySteps = 4;
     [Tooltip("Rocks never fully stop working - once fatigued they still make him flinch and hesitate for a beat instead of a real investigation.")]
     [SerializeField, Range(0f, 1f)] private float _rockFatigueFloor = 0.15f;
     [Tooltip("Non-rock distractions fatigue all the way to zero - completely ignored, no reaction at all, once worn out.")]
     [SerializeField, Range(0f, 1f)] private float _otherFatigueFloor = 0f;
+    [Tooltip("Separate budget for distraction reactions while already in attack mode. Gated by the normal fatigue threshold above per sound type - a type that's already exhausted its normal-mode uses can't use this either - but a type thrown for the first time while already in attack mode still works, since its normal-mode count is still zero.")]
+    [SerializeField] private int _attackModeFatigueThreshold = 2;
 
-    private enum EvasionPhase { None, BreakingLineOfSight, Reposition, Disengaged }
+    // FallingBack is a transitional beat, not a terminal state - it always leads into Reposition,
+    // either once its timer runs out or immediately if he can hear the player again in the meantime.
+    private enum EvasionPhase { None, BreakingLineOfSight, Backoff, Reposition }
 
     private float _currentDynamicSpeed;
     [SerializeField] private float _trackingTimer;
@@ -149,6 +169,8 @@ public class EnemyMovement : MonoBehaviour
     private Vector2 _evasionDestination;
     private float _disengageTimer;
     private float _repositionTimer;
+    private float _repositionRetargetTimer;
+    private float _flankSide;
 
     private bool _isCharging;
     private bool _inChargeWindup;
@@ -174,13 +196,18 @@ public class EnemyMovement : MonoBehaviour
     private float _elapsedRunTime;
     private float _escalationProgress;
     private Inventory _playerInventory;
+    private Camera _mainCamera;
 
     // Once the player has the car keys, the run is over one way or another - he warps to them and
     // never lets up again, so this permanently latches attack mode instead of letting it expire.
     private bool _keysEndgameActive;
 
+    // True for the stretch right after the keys ambush spawn until he's cleared the doorway.
+    private bool _routingToExitPoint;
+
     private SoundAwareness _playerAwarenessController;
     private readonly Dictionary<SoundType, int> _distractionUseCounts = new();
+    private readonly Dictionary<SoundType, int> _attackModeDistractionUseCounts = new();
 
     private Vector2 _desiredDirection;
     private Vector2 _targetDirection;
@@ -213,10 +240,21 @@ public class EnemyMovement : MonoBehaviour
         _attackTimer = 0f;
         _elapsedRunTime = 0f;
         _escalationProgress = 0f;
+        GameState.KeysEndgameActive = false;
         _chargeCooldownTimer = Random.Range(_chargeCooldownMin, _chargeCooldownMax);
         _rigidbody = GetComponent<Rigidbody2D>();
         _playerAwarenessController = GetComponent<SoundAwareness>();
+        _mainCamera = Camera.main;
         _obstacleCollisions = new RaycastHit2D[10];
+
+        // Clips default to "load on first Play()", which decompresses synchronously and can stall
+        // the very first playback for a beat or more. Force that load to happen now instead of at
+        // the dramatic moment attack mode actually fires.
+        PreloadClip(_fallbackClip);
+        PreloadClip(_chargeScreamClip);
+        PreloadClip(_angryClip);
+        PreloadClip(_attackWarningClip);
+        PreloadClip(_keysEndgameAttackClip);
 
         if (_playerAwarenessController != null)
         {
@@ -267,12 +305,14 @@ public class EnemyMovement : MonoBehaviour
         if (_playerTransform == null) yield break;
 
         _keysEndgameActive = true;
+        GameState.KeysEndgameActive = true;
 
         if (_keysAmbushSpawnPoint != null)
         {
             transform.position = _keysAmbushSpawnPoint.position;
             _activeCover = null;
             _previousCover = null;
+            _routingToExitPoint = _keysAmbushExitPoint != null;
         }
         else
         {
@@ -308,8 +348,25 @@ public class EnemyMovement : MonoBehaviour
     {
         if (!IsDistractionSound(soundEvent.type)) return;
 
-        _distractionUseCounts.TryGetValue(soundEvent.type, out int count);
-        _distractionUseCounts[soundEvent.type] = count + 1;
+        _distractionUseCounts.TryGetValue(soundEvent.type, out int normalCount);
+
+        // Attack mode otherwise ignores distractions entirely (SetAttackDirection beelines straight
+        // at the player). This carves out a small, separately-budgeted exception: a type that hasn't
+        // already burned through its normal-mode fatigue budget can still break the chase, even if
+        // this is the very first time it's been thrown. Once the keys endgame latches attack mode
+        // permanently, this exception closes too - the final hunt is never escapable this way.
+        if (_inAttackMode && !_keysEndgameActive && normalCount < _fatigueThreshold)
+        {
+            _attackModeDistractionUseCounts.TryGetValue(soundEvent.type, out int attackCount);
+            if (attackCount < _attackModeFatigueThreshold)
+            {
+                _attackModeDistractionUseCounts[soundEvent.type] = attackCount + 1;
+                _inAttackMode = false;
+                _attackTimer = 0f;
+            }
+        }
+
+        _distractionUseCounts[soundEvent.type] = normalCount + 1;
     }
 
     // A distraction that's completely worn out still makes him flinch toward the noise for a beat
@@ -465,7 +522,7 @@ public class EnemyMovement : MonoBehaviour
             {
                 _isPatrolling = false;
                 _isFallingBack = false;
-                HandleEvasionStateMachine(isVisibleToPlayer);
+                HandleEvasionStateMachine(isVisibleToPlayer, isHearingPlayerSoundEffective);
                 movementTargetPosition = _evasionDestination;
             }
             else if (distractionHesitateOnly)
@@ -791,6 +848,11 @@ public class EnemyMovement : MonoBehaviour
         }
     }
 
+    private static void PreloadClip(AudioClip clip)
+    {
+        if (clip != null && clip.loadState == AudioDataLoadState.Unloaded) clip.LoadAudioData();
+    }
+
     private void BeginEvasion()
     {
         _evasionPhase = EvasionPhase.BreakingLineOfSight;
@@ -803,10 +865,12 @@ public class EnemyMovement : MonoBehaviour
         _activeCover = null;
     }
 
-    // Runs the post-spotted flow: duck out of sight first, then either go quiet for a beat or
-    // swing around to a point ahead of the player, so the monster reads as reacting to being seen
-    // rather than just sidestepping back into view a moment later.
-    private void HandleEvasionStateMachine(bool isVisibleToPlayer)
+    // Runs the post-spotted flow: duck out of sight first, then always work toward getting ahead
+    // of the player rather than trailing behind. Backoff is a transitional beat, not an
+    // alternative to flanking - it only ever delays the flank attempt, never replaces it, and gets
+    // skipped/cut short the moment he can hear the player again (no reason to keep drifting away
+    // when he already knows exactly where they are).
+    private void HandleEvasionStateMachine(bool isVisibleToPlayer, bool isHearingPlayer)
     {
         switch (_evasionPhase)
         {
@@ -819,11 +883,7 @@ public class EnemyMovement : MonoBehaviour
 
                 if (!foundCover)
                 {
-                    // No cover nearby - fall back to just putting distance behind it.
-                    Vector2 away = _playerTransform != null
-                        ? ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized
-                        : -_desiredDirection;
-                    _evasionDestination = (Vector2)transform.position + away * 5f;
+                    _evasionDestination = ComputeVisionEscapePosition();
                 }
 
                 HandleMoveToPosition(_evasionDestination, _hideStoppingDistance);
@@ -831,13 +891,42 @@ public class EnemyMovement : MonoBehaviour
                 if (!isVisibleToPlayer)
                 {
                     _previousCover = _activeCover;
-                    TransitionToNextEvasionPhase();
+                    TransitionToNextEvasionPhase(isHearingPlayer);
+                }
+                break;
+
+            case EvasionPhase.Backoff:
+                _currentDynamicSpeed = _baseSpeed;
+                _disengageTimer -= Time.fixedDeltaTime;
+
+                if (_playerTransform != null)
+                {
+                    Vector2 away = ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized;
+                    _evasionDestination = (Vector2)transform.position + away;
+                    _desiredDirection = away;
+                }
+
+                if (isVisibleToPlayer)
+                {
+                    _evasionPhase = EvasionPhase.BreakingLineOfSight;
+                }
+                else if (isHearingPlayer || _disengageTimer <= 0f)
+                {
+                    StartReposition();
                 }
                 break;
 
             case EvasionPhase.Reposition:
                 _currentDynamicSpeed = _evasionSpeed;
                 _repositionTimer -= Time.fixedDeltaTime;
+
+                _repositionRetargetTimer -= Time.fixedDeltaTime;
+                if (_repositionRetargetTimer <= 0f)
+                {
+                    _repositionRetargetTimer = _repositionRetargetInterval;
+                    _evasionDestination = ComputeFlankPosition();
+                }
+
                 HandleMoveToPosition(_evasionDestination, _hideStoppingDistance);
 
                 if (isVisibleToPlayer)
@@ -850,57 +939,124 @@ public class EnemyMovement : MonoBehaviour
                     EndEvasion();
                 }
                 break;
-
-            case EvasionPhase.Disengaged:
-                _currentDynamicSpeed = _baseSpeed;
-                _disengageTimer -= Time.fixedDeltaTime;
-
-                if (_playerTransform != null)
-                {
-                    float distanceNow = Vector2.Distance(transform.position, _playerTransform.position);
-                    Vector2 away = ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized;
-                    _evasionDestination = (Vector2)transform.position + away;
-                    _desiredDirection = distanceNow < _passiveTrackingRange * 2f ? away : Vector2.zero;
-                }
-
-                if (isVisibleToPlayer)
-                {
-                    _evasionPhase = EvasionPhase.BreakingLineOfSight;
-                }
-                else if (_disengageTimer <= 0f)
-                {
-                    EndEvasion();
-                }
-                break;
         }
     }
 
-    private void TransitionToNextEvasionPhase()
+    private void TransitionToNextEvasionPhase(bool isHearingPlayer)
     {
-        if (Random.value < _disengageChance)
+        if (!isHearingPlayer && Random.value < _disengageChance)
         {
-            _evasionPhase = EvasionPhase.Disengaged;
+            _evasionPhase = EvasionPhase.Backoff;
             _disengageTimer = Random.Range(_disengageDurationMin, _disengageDurationMax);
         }
         else
         {
-            _evasionPhase = EvasionPhase.Reposition;
-            _evasionDestination = ComputeFlankPosition();
-            _repositionTimer = _repositionTimeout;
+            StartReposition();
         }
+    }
+
+    private void StartReposition()
+    {
+        _evasionPhase = EvasionPhase.Reposition;
+        // Picked once and held for the whole flank attempt - re-rolling this on every retarget
+        // would have him zigzag between the player's left and right instead of committing to one.
+        _flankSide = Random.value < 0.5f ? 1f : -1f;
+        _evasionDestination = ComputeFlankPosition();
+        _repositionTimer = _repositionTimeout;
+        _repositionRetargetTimer = _repositionRetargetInterval;
     }
 
     // Aims for a point ahead of the player's current facing so the monster approaches from a new
     // angle instead of trailing behind - "coming from the front" rather than following like a puppy.
+    // The flank route itself should never be visible in frame (he should only ever appear on camera
+    // AND in the vision cone when he's actually committing to attack/charge), so the distance is
+    // computed live off the camera's actual view bounds rather than a fixed offset - a fixed offset
+    // would put him on-screen whenever the camera happens to be zoomed in or the player near an edge.
     private Vector2 ComputeFlankPosition()
     {
         if (_playerTransform == null) return transform.position;
 
         Vector2 playerPos = _playerTransform.position;
         Vector2 forward = _playerTransform.up;
-        Vector2 lateral = new Vector2(-forward.y, forward.x) * (Random.value < 0.5f ? 1f : -1f);
+        Vector2 lateral = new Vector2(-forward.y, forward.x) * _flankSide;
 
-        return playerPos + forward * _repositionForwardDistance + lateral * _repositionLateralOffset;
+        Vector2 biasedDir = forward * _repositionForwardDistance + lateral * _repositionLateralOffset;
+        if (biasedDir.sqrMagnitude < 0.0001f) biasedDir = lateral;
+        biasedDir.Normalize();
+
+        float distance = ComputeOffCameraDistance(playerPos, biasedDir) + _repositionOffCameraMargin;
+        return playerPos + biasedDir * distance;
+    }
+
+    // Minimum distance along direction (from origin) needed to exit the camera's rectangular
+    // orthographic view. Assumes the camera roughly tracks the player (true here via
+    // SmoothCameraFollow), so origin is treated as already near the camera's centre.
+    private float ComputeOffCameraDistance(Vector2 origin, Vector2 direction)
+    {
+        if (_mainCamera == null) _mainCamera = Camera.main;
+        if (_mainCamera == null || !_mainCamera.orthographic) return _maxVisionEvadeDistance;
+
+        Vector2 camPos = _mainCamera.transform.position;
+        float halfHeight = _mainCamera.orthographicSize;
+        float halfWidth = halfHeight * _mainCamera.aspect;
+        Vector2 rel = origin - camPos;
+
+        float best = float.MaxValue;
+        if (Mathf.Abs(direction.x) > 0.0001f)
+        {
+            float room = halfWidth - Mathf.Abs(rel.x);
+            if (room > 0f) best = Mathf.Min(best, room / Mathf.Abs(direction.x));
+        }
+        if (Mathf.Abs(direction.y) > 0.0001f)
+        {
+            float room = halfHeight - Mathf.Abs(rel.y);
+            if (room > 0f) best = Mathf.Min(best, room / Mathf.Abs(direction.y));
+        }
+
+        return best == float.MaxValue ? _maxVisionEvadeDistance : best;
+    }
+
+    // When no cover is nearby to duck behind, dart off-screen through whichever edge of the vision
+    // cone is closest - left, right, or whatever that translates to given the player's current
+    // facing (which itself can point any direction) - rather than retreating straight back along
+    // the player's sightline. Retreating radially keeps him dead-center in the cone the whole time,
+    // so walking toward him just pushes him backward in a straight line; angle alone isn't enough
+    // either, since a point just past the boundary is still on-screen and gets caught again the
+    // instant the player turns - the distance floor below is what actually clears the screen.
+    private Vector2 ComputeVisionEscapePosition()
+    {
+        if (_playerTransform == null || _playerVision == null)
+        {
+            Vector2 fallbackAway = _playerTransform != null
+                ? ((Vector2)transform.position - (Vector2)_playerTransform.position).normalized
+                : -_desiredDirection;
+            return (Vector2)transform.position + fallbackAway * 5f;
+        }
+
+        Vector2 playerPos = _playerTransform.position;
+        Vector2 toMonster = (Vector2)transform.position - playerPos;
+        float currentRadius = toMonster.magnitude;
+
+        Vector2 facing = _playerTransform.up;
+        float facingAngleDeg = Mathf.Atan2(facing.y, facing.x) * Mathf.Rad2Deg;
+        float pointAngleDeg = Mathf.Atan2(toMonster.y, toMonster.x) * Mathf.Rad2Deg;
+        float deltaDeg = Mathf.DeltaAngle(facingAngleDeg, pointAngleDeg);
+
+        // Dead-center (including standing right on top of the player) has no lean to escape
+        // along - pick a side at random so which way he breaks can't be predicted or controlled.
+        float side = Mathf.Abs(deltaDeg) > 0.01f ? Mathf.Sign(deltaDeg) : (Random.value < 0.5f ? 1f : -1f);
+
+        float halfConeDeg = _playerVision.ConeAngleDegrees * 0.5f;
+        float targetAngleDeg = facingAngleDeg + side * (halfConeDeg + _visionEscapeAngleBuffer);
+        // Floored at Max Vision Evade Distance rather than just past the cone edge - the cone
+        // mechanic stops applying past that distance anyway (isVisibleToPlayer is forced false out
+        // there), and it's tuned to roughly the screen's visible extent, so this is what actually
+        // gets him off-screen instead of just tickling the boundary and immediately re-triggering.
+        float targetRadius = Mathf.Max(
+            currentRadius, _playerVision.CircleRadius + _visionEscapeRadiusBuffer, _maxVisionEvadeDistance);
+
+        float rad = targetAngleDeg * Mathf.Deg2Rad;
+        return playerPos + new Vector2(Mathf.Cos(rad), Mathf.Sin(rad)) * targetRadius;
     }
 
     private void ResetCoverTimer()
@@ -1009,6 +1165,7 @@ public class EnemyMovement : MonoBehaviour
     {
         Debug.Log("IN ATTACK MODE");
         PlaySound(_attackWarningClip);
+        if (_keysEndgameActive) PlaySound(_keysEndgameAttackClip);
         _activeCover = null;
         _previousCover = null;
         _currentDynamicSpeed = _attackSpeed;
@@ -1036,6 +1193,19 @@ public class EnemyMovement : MonoBehaviour
 
     private void SetAttackDirection()
     {
+        if (_routingToExitPoint)
+        {
+            if (Vector2.Distance(transform.position, _keysAmbushExitPoint.position) <= _exitPointArrivalDistance)
+            {
+                _routingToExitPoint = false;
+            }
+            else
+            {
+                _desiredDirection = ((Vector2)_keysAmbushExitPoint.position - (Vector2)transform.position).normalized;
+                return;
+            }
+        }
+
         if (_playerTransform != null)
         {
             _desiredDirection = ((Vector2)_playerTransform.position - (Vector2)transform.position).normalized;
@@ -1101,7 +1271,8 @@ public class EnemyMovement : MonoBehaviour
         }
         else
         {
-            _rigidbody.linearVelocity = _targetDirection * _currentDynamicSpeed;
+            float speedMultiplier = _keysEndgameActive ? _keysEndgameSpeedMultiplier : 1f;
+            _rigidbody.linearVelocity = _targetDirection * _currentDynamicSpeed * speedMultiplier;
         }
     }
 

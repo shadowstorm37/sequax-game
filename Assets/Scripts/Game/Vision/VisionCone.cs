@@ -64,6 +64,12 @@ public class VisionConeMask : MonoBehaviour
     private static readonly int VisionOrthoSizeId = Shader.PropertyToID("_VisionOrthoSize");
     private static readonly int ExtraVisionActiveId = Shader.PropertyToID("_ExtraVisionActive");
 
+    // Exposed for enemies that need to reason about the cone's shape directly (e.g. computing a
+    // point just outside its edge to dart toward), rather than only sampling IsPointVisible.
+    public float ConeAngleDegrees => coneAngleDegrees;
+    public float ConeRadius => coneRadius;
+    public float CircleRadius => circleRadius;
+
     private PlayerScript player;
     private Camera mainCamera;
 
