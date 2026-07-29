@@ -15,8 +15,8 @@ public class EnemyMovement : MonoBehaviour
     [SerializeField] private float _minPlayerDistance = 6f;
     [SerializeField] private float _instantAttackDistance = 2f;
     [SerializeField] private float _passiveTrackingRange = 8f;
-    [Tooltip("Flat speed while actively hunting to kill. Tuned between the player's walk (3.5) and sprint (6) speeds, so a chase is tense but survivable rather than an instant, unavoidable catch.")]
-    [SerializeField] private float _attackSpeed = 5f;
+    [Tooltip("Flat speed while actively hunting to kill. Tuned between the player's walk (2.5) and sprint (3) speeds, so a chase is tense but survivable rather than an instant, unavoidable catch.")]
+    [SerializeField] private float _attackSpeed = 2.8f;
     
     [Header("Vision Evasion")]
     [SerializeField] private VisionConeMask _playerVision;
