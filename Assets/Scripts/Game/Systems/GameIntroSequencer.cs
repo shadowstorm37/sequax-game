@@ -35,6 +35,13 @@ public class GameIntroSequencer : MonoBehaviour
 
     private void Start()
     {
+        // NEW: If we are reloading the active level from a death/restart button, bypass the intro completely!
+        if (PlayerPrefs.GetInt("IntroCompleted", 0) == 1)
+        {
+            SkipIntroToGameplay();
+            return;
+        }
+
         if (playerMovementScript != null) playerMovementScript.enabled = false;
 
         if (playerTransform != null)
@@ -51,6 +58,38 @@ public class GameIntroSequencer : MonoBehaviour
         }
 
         StartCoroutine(ExecuteIntroCutscene());
+    }
+
+    /// <summary>
+    /// NEW: Instantly positions player character and environment HUD configurations, bypassing sequence pipelines.
+    /// </summary>
+    private void SkipIntroToGameplay()
+    {
+        if (playerTransform != null && interiorSpawnPoint != null)
+        {
+            playerTransform.position = interiorSpawnPoint.position;
+
+            // Re-fetch component link to snap vision mechanics downward out of initialization
+            playerScriptComponent = playerTransform.GetComponent<PlayerScript>();
+            SetPlayerFacingDirectionField(Vector2.down);
+        }
+
+        if (blackFader != null)
+        {
+            blackFader.color = new Color(0f, 0f, 0f, 0f); // Clear out the darkness layer instantly
+        }
+
+        if (standardGameplayUI != null)
+        {
+            standardGameplayUI.SetActive(true);
+        }
+
+        if (playerMovementScript != null)
+        {
+            playerMovementScript.enabled = true;
+        }
+
+        Destroy(gameObject);
     }
 
     private void Update()
@@ -140,6 +179,10 @@ public class GameIntroSequencer : MonoBehaviour
         }
 
         if (playerMovementScript != null) playerMovementScript.enabled = true;
+
+        // NEW: Register the completion marker to native systems memory before destroying object
+        PlayerPrefs.SetInt("IntroCompleted", 1);
+        PlayerPrefs.Save();
 
         Destroy(gameObject);
     }

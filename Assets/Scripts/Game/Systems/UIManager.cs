@@ -84,6 +84,11 @@ public class UIManager : MonoBehaviour
     public void OnStartGamePress()
     {
         Time.timeScale = 1f;
+
+        // NEW: Wipe the intro completed flag here so a fresh run from the main menu ALWAYS plays the intro!
+        PlayerPrefs.DeleteKey("IntroCompleted");
+        PlayerPrefs.Save();
+
         SceneManager.LoadScene(1); // Loads the scene at index 1 in Build Settings
     }
 
@@ -91,6 +96,9 @@ public class UIManager : MonoBehaviour
     public void OnRestartPress()
     {
         Time.timeScale = 1f;
+
+        // NOTE: We intentionaly do NOT delete "IntroCompleted" here.
+        // This causes GameIntroSequencer to recognize it has already run once and skip straight to the action.
         SceneManager.LoadScene(SceneManager.GetActiveScene().name);
     }
 
