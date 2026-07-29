@@ -11,6 +11,10 @@ public class UIManager : MonoBehaviour
     [Tooltip("Drag the same UI overlay panel used for reading notes here.")]
     [SerializeField] private GameObject noteDisplayPanel; // Reference to block pause while reading
 
+    [Header("Scene Configuration")]
+    [Tooltip("The exact name of your main gameplay forest scene.")]
+    [SerializeField] private string gameplaySceneName = "MainForest";
+
     private bool isPaused = false;
 
     void Start()
@@ -32,25 +36,16 @@ public class UIManager : MonoBehaviour
             resumeAudio.ignoreListenerPause = true; // Tells Unity to play this audio even if game time is 0
         }
 
-        // UNLOCK MOUSE: Unlock for Main Menu or the WinsGame victory scene so players can click buttons
-        string currentScene = SceneManager.GetActiveScene().name;
-        if (currentScene == "MainMenu" || currentScene == "WinsGame" || SceneManager.GetActiveScene().buildIndex == 0)
-        {
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
-        }
-        else
-        {
-            Cursor.lockState = CursorLockMode.None;
-            Cursor.visible = true;
-        }
+        // UNLOCK MOUSE: Unlock for Menus, Game Over, or Victory scenes so players can click buttons
+        Cursor.lockState = CursorLockMode.None;
+        Cursor.visible = true;
     }
 
     void Update()
     {
-        // Block pausing if we are on the Main Menu OR the WinsGame screen
+        // Block pausing if we are on the Main Menu, WinsGame screen, or GameOver screen
         string currentScene = SceneManager.GetActiveScene().name;
-        if (currentScene != "WinsGame" && SceneManager.GetActiveScene().buildIndex != 0)
+        if (currentScene != "WinsGame" && currentScene != "GameOver" && SceneManager.GetActiveScene().buildIndex != 0)
         {
             if (Input.GetKeyDown(KeyCode.Escape))
             {
@@ -92,35 +87,40 @@ public class UIManager : MonoBehaviour
         SceneManager.LoadScene(1); // Loads the scene at index 1 in Build Settings
     }
 
-    // Restart the game when the player clicks on Restart Game button
+    // Restart the game from WITHIN the gameplay scene via pause menu
     public void OnRestartPress()
     {
         Time.timeScale = 1f;
-
-        // NOTE: We intentionaly do NOT delete "IntroCompleted" here.
-        // This causes GameIntroSequencer to recognize it has already run once and skip straight to the action.
         SceneManager.LoadScene(SceneManager.GetActiveScene().name);
+    }
+
+    // NEW: Call this from your "Try Again" button on the separate Game Over screen
+    public void OnTryAgainPress()
+    {
+        Time.timeScale = 1f;
+
+        // We intentionally do NOT delete "IntroCompleted" here.
+        // Your GameIntroSequencer will see the key and instantly skip the intro cutscene!
+        SceneManager.LoadScene(gameplaySceneName);
     }
 
     // When return to game button is pressed, it will resume play
     public void OnResumeGamePress()
     {
-        // Try to find the AudioSource on this button or its canvas and play the click
         AudioSource audio = GetComponent<AudioSource>();
         if (audio != null)
         {
-            audio.Play(); // Using .Play() instead of .PlayOneShot works better at timescale 0
+            audio.Play();
         }
 
-        // Resume the game timeline and hide the menu
         TogglePause();
     }
 
-    // Returns the player to the Main Menu screen from anywhere (including WinsGame)
+    // Returns the player to the Main Menu screen from anywhere
     public void OnMainMenuPress()
     {
         Time.timeScale = 1f;
-        SceneManager.LoadScene("MainMenu"); // Safely loads your main menu by its string name
+        SceneManager.LoadScene("MainMenu");
     }
 
     // Exits the game when the player clicks on Exit Game button
